@@ -1,20 +1,184 @@
+import {
+  CAMERA_PRESETS,
+  CameraParamStore,
+  DEFAULT_CAMERA_PARAMS,
+  type CameraParams,
+  type CameraPresetName
+} from "./state";
 import { WebGLImageRenderer } from "./gl/WebGLImageRenderer";
 
 type SourceMode = "image" | "webcam";
+type NumericParamKey =
+  | "exposureEV"
+  | "shutter"
+  | "iso"
+  | "aperture"
+  | "focalLength"
+  | "focusDistance"
+  | "distortion"
+  | "vignette"
+  | "chromaAberration";
+
+type SliderControlDef = {
+  key: NumericParamKey;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  toValue: (raw: number) => number;
+  toRaw: (value: number) => number;
+  format: (value: number) => string;
+};
+
+type SliderBinding = {
+  def: SliderControlDef;
+  input: HTMLInputElement;
+  readout: HTMLOutputElement;
+};
 
 type AppElements = {
   canvas: HTMLCanvasElement;
   fileInput: HTMLInputElement;
   imageSourceButton: HTMLButtonElement;
   webcamSourceButton: HTMLButtonElement;
+  presetSelect: HTMLSelectElement;
+  presetApplyButton: HTMLButtonElement;
+  presetResetButton: HTMLButtonElement;
+  previewOriginalButton: HTMLButtonElement;
+  previewProcessedButton: HTMLButtonElement;
+  previewSplitButton: HTMLButtonElement;
+  splitControl: HTMLElement;
+  splitSlider: HTMLInputElement;
+  splitReadout: HTMLOutputElement;
+  toneMapToggle: HTMLInputElement;
+  paramControls: HTMLElement;
   fileName: HTMLElement;
   status: HTMLElement;
   previewPanel: HTMLElement;
   emptyState: HTMLElement;
 };
 
+const IDENTITY = (value: number): number => value;
+const SHUTTER_MIN = 1 / 8000;
+const SHUTTER_MAX = 1 / 15;
+
+const toShutterSeconds = (sliderValue: number): number =>
+  SHUTTER_MIN * Math.pow(SHUTTER_MAX / SHUTTER_MIN, clamp(sliderValue, 0, 1));
+
+const toShutterSlider = (seconds: number): number =>
+  Math.log(seconds / SHUTTER_MIN) / Math.log(SHUTTER_MAX / SHUTTER_MIN);
+
+const formatSigned = (value: number, digits: number): string => {
+  const prefix = value >= 0 ? "+" : "";
+  return `${prefix}${value.toFixed(digits)}`;
+};
+
+const formatShutter = (seconds: number): string => {
+  if (seconds >= 1) {
+    return `${seconds.toFixed(2)}s`;
+  }
+
+  const denominator = Math.max(1, Math.round(1 / seconds));
+  return `1/${denominator}`;
+};
+
+const PARAM_SLIDER_DEFS: SliderControlDef[] = [
+  {
+    key: "exposureEV",
+    label: "Exposure (EV)",
+    min: -3,
+    max: 3,
+    step: 0.01,
+    toValue: IDENTITY,
+    toRaw: IDENTITY,
+    format: (value) => formatSigned(value, 2)
+  },
+  {
+    key: "shutter",
+    label: "Shutter",
+    min: 0,
+    max: 1,
+    step: 0.001,
+    toValue: toShutterSeconds,
+    toRaw: toShutterSlider,
+    format: formatShutter
+  },
+  {
+    key: "iso",
+    label: "ISO",
+    min: 100,
+    max: 6400,
+    step: 1,
+    toValue: IDENTITY,
+    toRaw: IDENTITY,
+    format: (value) => `${Math.round(value)}`
+  },
+  {
+    key: "aperture",
+    label: "Aperture",
+    min: 1.4,
+    max: 22,
+    step: 0.1,
+    toValue: IDENTITY,
+    toRaw: IDENTITY,
+    format: (value) => `f/${value.toFixed(1)}`
+  },
+  {
+    key: "focalLength",
+    label: "Focal Length",
+    min: 18,
+    max: 120,
+    step: 1,
+    toValue: IDENTITY,
+    toRaw: IDENTITY,
+    format: (value) => `${Math.round(value)}mm`
+  },
+  {
+    key: "focusDistance",
+    label: "Focus Distance",
+    min: 0.2,
+    max: 50,
+    step: 0.1,
+    toValue: IDENTITY,
+    toRaw: IDENTITY,
+    format: (value) => `${value.toFixed(1)}m`
+  },
+  {
+    key: "distortion",
+    label: "Distortion",
+    min: -0.5,
+    max: 0.5,
+    step: 0.01,
+    toValue: IDENTITY,
+    toRaw: IDENTITY,
+    format: (value) => formatSigned(value, 2)
+  },
+  {
+    key: "vignette",
+    label: "Vignette",
+    min: 0,
+    max: 1,
+    step: 0.01,
+    toValue: IDENTITY,
+    toRaw: IDENTITY,
+    format: (value) => value.toFixed(2)
+  },
+  {
+    key: "chromaAberration",
+    label: "Chroma Aberration",
+    min: 0,
+    max: 1,
+    step: 0.01,
+    toValue: IDENTITY,
+    toRaw: IDENTITY,
+    format: (value) => value.toFixed(2)
+  }
+];
+
 export class CameraLabApp {
   private readonly root: HTMLElement;
+  private readonly params = new CameraParamStore(DEFAULT_CAMERA_PARAMS);
+  private readonly sliderBindings: SliderBinding[] = [];
   private renderer?: WebGLImageRenderer;
   private elements?: AppElements;
   private sourceMode: SourceMode = "image";
@@ -46,18 +210,57 @@ export class CameraLabApp {
         <aside class="control-panel">
           <h1>CameraLab Web MVP</h1>
           <p class="lead">
-            T3 implementation: switch between uploaded image and live webcam preview.
+            T4 implementation: source switch + parameter system + preview controls.
           </p>
 
-          <div class="source-toggle" role="group" aria-label="Source Select">
-            <button id="source-image" class="source-button is-active" type="button">Image</button>
-            <button id="source-webcam" class="source-button" type="button">Webcam</button>
-          </div>
+          <section class="control-block">
+            <p class="control-title">Source</p>
+            <div class="source-toggle" role="group" aria-label="Source Select">
+              <button id="source-image" class="source-button is-active" type="button">Image</button>
+              <button id="source-webcam" class="source-button" type="button">Webcam</button>
+            </div>
 
-          <label class="file-button" for="file-input">Choose Image</label>
-          <input id="file-input" type="file" accept="image/*" />
+            <label class="file-button" for="file-input">Choose Image</label>
+            <input id="file-input" type="file" accept="image/*" />
+            <p class="hint">You can also drag and drop an image file onto the preview area.</p>
+          </section>
 
-          <p class="hint">You can also drag and drop an image file onto the preview area.</p>
+          <section class="control-block">
+            <p class="control-title">Presets</p>
+            <div class="preset-row">
+              <select id="preset-select">
+                <option value="Portrait">Portrait</option>
+                <option value="Landscape">Landscape</option>
+                <option value="Night">Night</option>
+              </select>
+              <button id="preset-apply" class="mini-button" type="button">Apply</button>
+              <button id="preset-reset" class="mini-button is-muted" type="button">Reset</button>
+            </div>
+          </section>
+
+          <section class="control-block">
+            <p class="control-title">Preview</p>
+            <div class="preview-toggle" role="group" aria-label="Preview Mode">
+              <button id="preview-original" class="preview-button" type="button">A</button>
+              <button id="preview-processed" class="preview-button is-active" type="button">B</button>
+              <button id="preview-split" class="preview-button" type="button">Split</button>
+            </div>
+            <label id="split-control" class="split-control" for="split-slider">
+              <span>Split Position</span>
+              <input id="split-slider" type="range" min="0" max="1" step="0.01" value="0.5" />
+              <output id="split-readout">50%</output>
+            </label>
+            <label class="tone-map-row" for="tone-map-toggle">
+              <span>Tone Mapping</span>
+              <input id="tone-map-toggle" type="checkbox" checked />
+            </label>
+          </section>
+
+          <section class="control-block param-section">
+            <p class="control-title">Camera Parameters</p>
+            <div id="param-controls" class="param-controls"></div>
+          </section>
+
           <p class="file-name" id="file-name">No image loaded</p>
           <p class="status" id="status">Waiting for image input.</p>
         </aside>
@@ -72,9 +275,22 @@ export class CameraLabApp {
     this.elements = this.collectElements();
     this.renderer = new WebGLImageRenderer(this.elements.canvas);
 
+    this.createParameterControls();
     this.bindFileInput();
     this.bindDragAndDrop();
     this.bindSourceButtons();
+    this.bindPresetControls();
+    this.bindPreviewControls();
+
+    this.params.subscribe((state) => {
+      this.renderer?.setParams(state);
+      this.syncParameterControls(state);
+      this.syncPreviewControls(state);
+
+      if (this.sourceMode !== "webcam" || !this.webcamVideo) {
+        this.renderer?.render();
+      }
+    });
 
     window.addEventListener("resize", this.onResize);
     window.addEventListener("dragover", this.blockWindowDrop);
@@ -92,11 +308,66 @@ export class CameraLabApp {
       fileInput: this.requireElement<HTMLInputElement>("#file-input"),
       imageSourceButton: this.requireElement<HTMLButtonElement>("#source-image"),
       webcamSourceButton: this.requireElement<HTMLButtonElement>("#source-webcam"),
+      presetSelect: this.requireElement<HTMLSelectElement>("#preset-select"),
+      presetApplyButton: this.requireElement<HTMLButtonElement>("#preset-apply"),
+      presetResetButton: this.requireElement<HTMLButtonElement>("#preset-reset"),
+      previewOriginalButton: this.requireElement<HTMLButtonElement>("#preview-original"),
+      previewProcessedButton: this.requireElement<HTMLButtonElement>("#preview-processed"),
+      previewSplitButton: this.requireElement<HTMLButtonElement>("#preview-split"),
+      splitControl: this.requireElement<HTMLElement>("#split-control"),
+      splitSlider: this.requireElement<HTMLInputElement>("#split-slider"),
+      splitReadout: this.requireElement<HTMLOutputElement>("#split-readout"),
+      toneMapToggle: this.requireElement<HTMLInputElement>("#tone-map-toggle"),
+      paramControls: this.requireElement<HTMLElement>("#param-controls"),
       fileName: this.requireElement<HTMLElement>("#file-name"),
       status: this.requireElement<HTMLElement>("#status"),
       previewPanel: this.requireElement<HTMLElement>("#preview-panel"),
       emptyState: this.requireElement<HTMLElement>("#empty-state")
     };
+  }
+
+  private createParameterControls(): void {
+    if (!this.elements) {
+      return;
+    }
+
+    this.sliderBindings.length = 0;
+    this.elements.paramControls.innerHTML = "";
+
+    for (const def of PARAM_SLIDER_DEFS) {
+      const row = document.createElement("label");
+      row.className = "param-row";
+      row.htmlFor = `param-${def.key}`;
+
+      const name = document.createElement("span");
+      name.className = "param-name";
+      name.textContent = def.label;
+
+      const input = document.createElement("input");
+      input.className = "param-slider";
+      input.type = "range";
+      input.id = `param-${def.key}`;
+      input.min = `${def.min}`;
+      input.max = `${def.max}`;
+      input.step = `${def.step}`;
+
+      const readout = document.createElement("output");
+      readout.className = "param-value";
+
+      row.append(name, input, readout);
+      this.elements.paramControls.append(row);
+
+      input.addEventListener("input", () => {
+        const nextValue = def.toValue(Number(input.value));
+        this.params.set(def.key, nextValue);
+      });
+
+      this.sliderBindings.push({
+        def,
+        input,
+        readout
+      });
+    }
   }
 
   private bindFileInput(): void {
@@ -126,6 +397,47 @@ export class CameraLabApp {
     });
     this.elements.webcamSourceButton.addEventListener("click", () => {
       void this.setSourceMode("webcam");
+    });
+  }
+
+  private bindPresetControls(): void {
+    if (!this.elements) {
+      return;
+    }
+
+    const { presetApplyButton, presetResetButton, presetSelect, status } = this.elements;
+
+    presetApplyButton.addEventListener("click", () => {
+      const presetName = presetSelect.value as CameraPresetName;
+      this.params.patch(CAMERA_PRESETS[presetName]);
+      status.textContent = `Applied ${presetName} preset.`;
+    });
+
+    presetResetButton.addEventListener("click", () => {
+      this.params.reset();
+      status.textContent = "Reset to default parameters.";
+    });
+  }
+
+  private bindPreviewControls(): void {
+    if (!this.elements) {
+      return;
+    }
+
+    this.elements.previewOriginalButton.addEventListener("click", () => {
+      this.params.set("previewMode", "original");
+    });
+    this.elements.previewProcessedButton.addEventListener("click", () => {
+      this.params.set("previewMode", "processed");
+    });
+    this.elements.previewSplitButton.addEventListener("click", () => {
+      this.params.set("previewMode", "split");
+    });
+    this.elements.splitSlider.addEventListener("input", () => {
+      this.params.set("splitPosition", clamp(Number(this.elements?.splitSlider.value ?? 0.5), 0, 1));
+    });
+    this.elements.toneMapToggle.addEventListener("change", () => {
+      this.params.set("toneMap", Boolean(this.elements?.toneMapToggle.checked));
     });
   }
 
@@ -162,6 +474,34 @@ export class CameraLabApp {
 
       await this.loadIntoRenderer(file);
     });
+  }
+
+  private syncParameterControls(state: Readonly<CameraParams>): void {
+    for (const binding of this.sliderBindings) {
+      const currentValue = state[binding.def.key];
+      const nextRaw = clamp(binding.def.toRaw(currentValue), binding.def.min, binding.def.max);
+      binding.input.value = `${nextRaw}`;
+      binding.readout.textContent = binding.def.format(currentValue);
+    }
+  }
+
+  private syncPreviewControls(state: Readonly<CameraParams>): void {
+    if (!this.elements) {
+      return;
+    }
+
+    this.elements.previewOriginalButton.classList.toggle("is-active", state.previewMode === "original");
+    this.elements.previewProcessedButton.classList.toggle(
+      "is-active",
+      state.previewMode === "processed"
+    );
+    this.elements.previewSplitButton.classList.toggle("is-active", state.previewMode === "split");
+
+    const splitPercent = Math.round(state.splitPosition * 100);
+    this.elements.splitReadout.textContent = `${splitPercent}%`;
+    this.elements.splitSlider.value = `${state.splitPosition}`;
+    this.elements.splitControl.classList.toggle("is-hidden", state.previewMode !== "split");
+    this.elements.toneMapToggle.checked = state.toneMap;
   }
 
   private async loadIntoRenderer(file: File): Promise<void> {
@@ -390,4 +730,8 @@ export class CameraLabApp {
 
     return node as T;
   }
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }

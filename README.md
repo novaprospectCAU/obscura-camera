@@ -1,6 +1,6 @@
 # Obscura Camera
 
-Current implementation target in this repo is `apps/web` (CameraLab Web MVP T0-T3).
+Current implementation target in this repo is `apps/web` (CameraLab Web MVP T0-T4).
 
 Run it with:
 

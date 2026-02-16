@@ -1,4 +1,4 @@
-# CameraLab Web MVP (`T0-T3`)
+# CameraLab Web MVP (`T0-T4`)
 
 This folder contains the initial web MVP with:
 
@@ -8,11 +8,15 @@ This folder contains the initial web MVP with:
 - Image loading via file input and drag & drop
 - Webcam input via `getUserMedia`
 - Source toggle (image/webcam)
+- Parameter state store with change listeners
+- Camera sliders + numeric readouts
+- Presets (Portrait / Landscape / Night)
+- Preview modes: A / B / Split + split slider
 
 Not included yet:
 
-- Effects pipeline
 - Multi-pass rendering
+- Histogram panel
 
 ## Run
 
