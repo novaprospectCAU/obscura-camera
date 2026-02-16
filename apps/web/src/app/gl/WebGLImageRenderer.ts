@@ -227,20 +227,6 @@ void main() {
 }
 `;
 
-const COPY_FRAGMENT_SOURCE = `#version 300 es
-precision highp float;
-
-in vec2 vUv;
-
-uniform sampler2D uSource;
-
-out vec4 outColor;
-
-void main() {
-  outColor = texture(uSource, vUv);
-}
-`;
-
 export class WebGLImageRenderer {
   private readonly canvas: HTMLCanvasElement;
   private readonly gl: WebGL2RenderingContext;
@@ -252,7 +238,6 @@ export class WebGLImageRenderer {
   private readonly lensProgram: WebGLProgram;
   private readonly effectsProgram: WebGLProgram;
   private readonly compositeProgram: WebGLProgram;
-  private readonly copyProgram: WebGLProgram;
 
   private readonly inputSourceUniform: WebGLUniformLocation;
   private readonly inputExposureUniform: WebGLUniformLocation;
@@ -278,8 +263,6 @@ export class WebGLImageRenderer {
   private readonly compositeCanvasSizeUniform: WebGLUniformLocation;
   private readonly compositePreviewModeUniform: WebGLUniformLocation;
   private readonly compositeSplitPositionUniform: WebGLUniformLocation;
-
-  private readonly copySourceUniform: WebGLUniformLocation;
   private readonly histogramFramebuffer: WebGLFramebuffer;
   private readonly histogramTexture: WebGLTexture;
   private readonly histogramPixels = new Uint8Array(HISTOGRAM_SIZE * HISTOGRAM_SIZE * 4);
@@ -316,7 +299,6 @@ export class WebGLImageRenderer {
     this.lensProgram = this.createProgram(VERTEX_SHADER_SOURCE, PASS_LENS_FRAGMENT_SOURCE);
     this.effectsProgram = this.createProgram(VERTEX_SHADER_SOURCE, PASS_EFFECTS_FRAGMENT_SOURCE);
     this.compositeProgram = this.createProgram(VERTEX_SHADER_SOURCE, COMPOSITE_FRAGMENT_SOURCE);
-    this.copyProgram = this.createProgram(VERTEX_SHADER_SOURCE, COPY_FRAGMENT_SOURCE);
 
     this.inputSourceUniform = this.requireUniform(this.inputProgram, "uSource");
     this.inputExposureUniform = this.requireUniform(this.inputProgram, "uExposureEV");
@@ -342,8 +324,6 @@ export class WebGLImageRenderer {
     this.compositeCanvasSizeUniform = this.requireUniform(this.compositeProgram, "uCanvasSize");
     this.compositePreviewModeUniform = this.requireUniform(this.compositeProgram, "uPreviewMode");
     this.compositeSplitPositionUniform = this.requireUniform(this.compositeProgram, "uSplitPosition");
-
-    this.copySourceUniform = this.requireUniform(this.copyProgram, "uSource");
 
     const histogramFramebuffer = this.gl.createFramebuffer();
     const histogramTexture = this.createTexture();
@@ -515,12 +495,46 @@ export class WebGLImageRenderer {
   }
 
   private runCompositePass(): void {
-    const processed = this.pingPong.getA();
-
     this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
     this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     this.gl.clearColor(0.08, 0.09, 0.11, 1);
     this.gl.clear(this.gl.COLOR_BUFFER_BIT);
+    this.drawComposite(this.canvas.width, this.canvas.height, this.canvas.width, this.canvas.height);
+  }
+
+  private updateHistogramIfNeeded(): void {
+    const now = performance.now();
+    if (now - this.lastHistogramUpdateMs < HISTOGRAM_INTERVAL_MS) {
+      return;
+    }
+    this.lastHistogramUpdateMs = now;
+
+    this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, this.histogramFramebuffer);
+    this.gl.viewport(0, 0, HISTOGRAM_SIZE, HISTOGRAM_SIZE);
+    this.drawComposite(HISTOGRAM_SIZE, HISTOGRAM_SIZE, this.canvas.width, this.canvas.height);
+    this.gl.readPixels(
+      0,
+      0,
+      HISTOGRAM_SIZE,
+      HISTOGRAM_SIZE,
+      this.gl.RGBA,
+      this.gl.UNSIGNED_BYTE,
+      this.histogramPixels
+    );
+
+    this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
+
+    this.buildHistogramBins();
+  }
+
+  private drawComposite(
+    viewportWidth: number,
+    viewportHeight: number,
+    canvasWidthForUniform: number,
+    canvasHeightForUniform: number
+  ): void {
+    const processed = this.pingPong.getA();
+
     this.gl.useProgram(this.compositeProgram);
     this.gl.bindVertexArray(this.vao);
 
@@ -533,7 +547,7 @@ export class WebGLImageRenderer {
     this.gl.uniform1i(this.compositeProcessedUniform, 1);
 
     this.gl.uniform2f(this.compositeImageSizeUniform, this.sourceWidth, this.sourceHeight);
-    this.gl.uniform2f(this.compositeCanvasSizeUniform, this.canvas.width, this.canvas.height);
+    this.gl.uniform2f(this.compositeCanvasSizeUniform, canvasWidthForUniform, canvasHeightForUniform);
     this.gl.uniform1f(
       this.compositePreviewModeUniform,
       this.previewModeToUniform(this.params.previewMode)
@@ -547,45 +561,7 @@ export class WebGLImageRenderer {
     this.gl.bindTexture(this.gl.TEXTURE_2D, null);
     this.gl.bindVertexArray(null);
     this.gl.useProgram(null);
-  }
-
-  private updateHistogramIfNeeded(): void {
-    const now = performance.now();
-    if (now - this.lastHistogramUpdateMs < HISTOGRAM_INTERVAL_MS) {
-      return;
-    }
-    this.lastHistogramUpdateMs = now;
-
-    const processedTexture = this.pingPong.getA().texture;
-    const sourceForHistogram =
-      this.params.previewMode === "original" ? this.sourceTexture : processedTexture;
-
-    this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, this.histogramFramebuffer);
-    this.gl.viewport(0, 0, HISTOGRAM_SIZE, HISTOGRAM_SIZE);
-    this.gl.useProgram(this.copyProgram);
-    this.gl.bindVertexArray(this.vao);
-
-    this.gl.activeTexture(this.gl.TEXTURE0);
-    this.gl.bindTexture(this.gl.TEXTURE_2D, sourceForHistogram);
-    this.gl.uniform1i(this.copySourceUniform, 0);
-
-    this.gl.drawElements(this.gl.TRIANGLES, 6, this.gl.UNSIGNED_SHORT, 0);
-    this.gl.readPixels(
-      0,
-      0,
-      HISTOGRAM_SIZE,
-      HISTOGRAM_SIZE,
-      this.gl.RGBA,
-      this.gl.UNSIGNED_BYTE,
-      this.histogramPixels
-    );
-
-    this.gl.bindTexture(this.gl.TEXTURE_2D, null);
-    this.gl.bindVertexArray(null);
-    this.gl.useProgram(null);
-    this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
-
-    this.buildHistogramBins();
+    this.gl.viewport(0, 0, viewportWidth, viewportHeight);
   }
 
   private buildHistogramBins(): void {
@@ -802,4 +778,3 @@ export class WebGLImageRenderer {
     return uniform;
   }
 }
-
