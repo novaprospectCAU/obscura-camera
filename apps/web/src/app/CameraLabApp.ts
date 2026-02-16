@@ -3066,8 +3066,12 @@ function buildPromptFallbackPatch(
     hitCount += 1;
   }
   if (hasAny(["sharp", "detail", "crisp", "선명", "디테일"])) {
-    setDelta("sharpen", 0.22);
-    setDelta("noiseReduction", -0.16);
+    setDelta("sharpen", 0.14);
+    setDelta("noiseReduction", 0.16);
+    setDelta("contrast", 0.05);
+    if (current.iso > 1600) {
+      patch.iso = clamp(current.iso * 0.82, PARAM_VALUE_LIMITS.iso.min, PARAM_VALUE_LIMITS.iso.max);
+    }
     hitCount += 1;
   } else if (hasAny(["soft", "dreamy", "hazy", "부드", "몽환"])) {
     setDelta("sharpen", -0.2);
@@ -3234,6 +3238,9 @@ function shouldAllowEnhancedUpscale(prompt: string): boolean {
   const keywords = [
     "enhanced",
     "strong difference",
+    "upscale detail",
+    "super-resolution",
+    "super resolution",
     "texture",
     "grain",
     "gritty",
@@ -3242,7 +3249,6 @@ function shouldAllowEnhancedUpscale(prompt: string): boolean {
     "텍스처",
     "질감",
     "그레인",
-    "디테일",
     "강한 차이",
     "선명 디테일"
   ];
@@ -3268,6 +3274,56 @@ function shouldPreferLowNoise(prompt: string): boolean {
   return keywords.some((keyword) => normalized.includes(keyword));
 }
 
+function shouldAllowUpscaleAdjustments(prompt: string): boolean {
+  const normalized = prompt.toLowerCase();
+  const keywords = [
+    "upscale",
+    "super-resolution",
+    "super resolution",
+    "higher resolution",
+    "4x",
+    "3x",
+    "2x",
+    "해상도",
+    "업스케일",
+    "초해상",
+    "고해상도"
+  ];
+  return keywords.some((keyword) => normalized.includes(keyword));
+}
+
+function shouldRequestSharpness(prompt: string): boolean {
+  const normalized = prompt.toLowerCase();
+  const keywords = [
+    "sharp",
+    "sharper",
+    "crisp",
+    "clarity",
+    "clearer",
+    "detail",
+    "선명",
+    "또렷",
+    "디테일"
+  ];
+  return keywords.some((keyword) => normalized.includes(keyword));
+}
+
+function shouldAllowNoisyTexture(prompt: string): boolean {
+  const normalized = prompt.toLowerCase();
+  const keywords = [
+    "grain",
+    "gritty",
+    "film grain",
+    "noisy",
+    "noise texture",
+    "textured",
+    "거친 질감",
+    "그레인",
+    "노이즈 질감"
+  ];
+  return keywords.some((keyword) => normalized.includes(keyword));
+}
+
 function enforceAiPatchSafety(
   patch: AiSuggestedPatch,
   prompt: string,
@@ -3280,6 +3336,10 @@ function enforceAiPatchSafety(
   const allowDof = shouldAllowDepthOfFieldAdjustments(prompt);
   const allowShutter = shouldAllowShutterAdjustments(prompt);
   const allowAggressiveExposure = shouldAllowAggressiveExposureAdjustments(prompt);
+  const allowUpscaleAdjustments = shouldAllowUpscaleAdjustments(prompt);
+  const requestSharpness = shouldRequestSharpness(prompt);
+  const allowNoisyTexture = shouldAllowNoisyTexture(prompt);
+  const preferLowNoise = shouldPreferLowNoise(prompt) || (requestSharpness && !allowNoisyTexture);
 
   if (!allowLens) {
     delete next.focalLength;
@@ -3295,6 +3355,15 @@ function enforceAiPatchSafety(
 
   if (!allowShutter) {
     delete next.shutter;
+  }
+
+  if (!allowUpscaleAdjustments) {
+    delete next.upscaleFactor;
+    if (requestSharpness) {
+      next.upscaleStyle = "balanced";
+    } else {
+      delete next.upscaleStyle;
+    }
   }
 
   if (isFiniteNumber(next.exposureEV)) {
@@ -3325,7 +3394,7 @@ function enforceAiPatchSafety(
     next.contrast = Math.min(baseContrast, 1.18);
   }
 
-  const allowEnhanced = shouldAllowEnhancedUpscale(prompt) && !shouldPreferLowNoise(prompt);
+  const allowEnhanced = shouldAllowEnhancedUpscale(prompt) && !preferLowNoise;
   if (next.upscaleStyle === "enhanced" && !allowEnhanced) {
     next.upscaleStyle = "balanced";
   }
@@ -3334,6 +3403,34 @@ function enforceAiPatchSafety(
     const currentNr = current.noiseReduction;
     const nextNr = isFiniteNumber(next.noiseReduction) ? next.noiseReduction : currentNr;
     next.noiseReduction = clamp(Math.max(nextNr, 0.38), 0, 1);
+  }
+
+  if (requestSharpness && !allowNoisyTexture) {
+    next.upscaleStyle = "balanced";
+
+    if (isFiniteNumber(next.sharpen)) {
+      next.sharpen = clamp(next.sharpen, 0, 0.62);
+    }
+
+    const nrFloor = Math.max(current.noiseReduction, 0.42);
+    if (isFiniteNumber(next.noiseReduction)) {
+      next.noiseReduction = clamp(Math.max(next.noiseReduction, nrFloor), 0, 0.92);
+    } else {
+      next.noiseReduction = nrFloor;
+    }
+
+    if (isFiniteNumber(next.iso)) {
+      next.iso = Math.min(next.iso, current.iso + 180);
+    } else if (current.iso > 1800 && !allowAggressiveExposure) {
+      next.iso = clamp(current.iso * 0.86, PARAM_VALUE_LIMITS.iso.min, PARAM_VALUE_LIMITS.iso.max);
+    }
+  }
+
+  const sharpenValue = isFiniteNumber(next.sharpen) ? next.sharpen : current.sharpen;
+  if (sharpenValue >= 0.5) {
+    const nrFloor = Math.max(0.36, current.noiseReduction);
+    const nrValue = isFiniteNumber(next.noiseReduction) ? next.noiseReduction : current.noiseReduction;
+    next.noiseReduction = clamp(Math.max(nrValue, nrFloor), 0, 0.95);
   }
 
   return next;
@@ -3620,6 +3717,9 @@ async function requestAiCameraPatch(
           "Do not change shutter unless user explicitly asks for motion blur, long exposure, or shutter behavior.",
           "Default upscaleStyle to balanced.",
           "Use enhanced only if user explicitly asks for stronger texture/grain/detail and does not ask for a clean/low-noise image.",
+          "For prompts like sharper/clearer/선명, prioritize clean sharpness: moderate sharpen + sufficient noiseReduction.",
+          "For sharpness requests, avoid raising ISO and avoid enhanced/grainy looks unless explicitly requested.",
+          "Do not change upscaleFactor or upscaleStyle unless user explicitly asks for upscaling/resolution increase.",
           "Do not change focalLength or focusDistance unless the prompt explicitly asks for lens/zoom/focus/depth-of-field change."
         ].join("\n")
       },
