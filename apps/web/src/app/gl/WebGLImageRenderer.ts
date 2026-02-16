@@ -6,6 +6,7 @@ export type HistogramData = {
   g: Float32Array;
   b: Float32Array;
   maxBin: number;
+  version: number;
 };
 
 const HISTOGRAM_BINS = 64;
@@ -273,7 +274,8 @@ export class WebGLImageRenderer {
     r: new Float32Array(HISTOGRAM_BINS),
     g: new Float32Array(HISTOGRAM_BINS),
     b: new Float32Array(HISTOGRAM_BINS),
-    maxBin: 0
+    maxBin: 0,
+    version: 0
   };
 
   private sourceWidth = 1;
@@ -610,6 +612,7 @@ export class WebGLImageRenderer {
     }
 
     this.histogram.maxBin = maxBin;
+    this.histogram.version += 1;
   }
 
   private allocateHistogramResources(): void {

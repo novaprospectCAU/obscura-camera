@@ -189,6 +189,7 @@ export class CameraLabApp {
   private webcamFrameHandle?: number;
   private sourceSwitchToken = 0;
   private unsubscribeParams?: () => void;
+  private lastHistogramVersion = -1;
 
   private readonly onResize = () => {
     this.renderer?.resize();
@@ -778,6 +779,11 @@ export class CameraLabApp {
     }
 
     const histogram = this.renderer.getHistogram();
+    if (histogram.version === this.lastHistogramVersion) {
+      return;
+    }
+
+    this.lastHistogramVersion = histogram.version;
     const canvas = this.elements.histogramCanvas;
     const ctx = canvas.getContext("2d");
     if (!ctx) {
