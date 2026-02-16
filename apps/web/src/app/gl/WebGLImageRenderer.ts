@@ -159,12 +159,14 @@ void main() {
     1.0
   );
   float apertureNorm = clamp((uAperture - 1.4) / (22.0 - 1.4), 0.0, 1.0);
+  float apertureWide = 1.0 - apertureNorm;
   float focusNorm = clamp((uFocusDistance - 0.2) / (50.0 - 0.2), 0.0, 1.0);
 
   float focusPlane = mix(0.12, 0.95, focusNorm);
   float sceneDepth = clamp(length(vUv - 0.5) * 1.8, 0.0, 1.0);
   float coc = abs(sceneDepth - focusPlane);
-  float blurPixels = shutterNorm * 6.0 + coc * apertureNorm * 9.0;
+  float focusBlurStrength = mix(1.2, 9.0, apertureWide);
+  float blurPixels = shutterNorm * 5.0 + coc * focusBlurStrength;
 
   vec2 blurStepX = vec2(blurPixels / uResolution.x, 0.0);
   vec2 blurStepY = vec2(0.0, blurPixels / uResolution.y);
