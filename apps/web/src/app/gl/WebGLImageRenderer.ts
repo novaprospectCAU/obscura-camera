@@ -228,13 +228,16 @@ void main() {
     min(subjectBoxSize, vec2(1.0) - subjectBoxMin)
   );
 
-  float focusPlane = focusNorm;
-  float sceneDepth = clamp(length(vUv - subjectCenter) * 1.8, 0.0, 1.0);
-  float coc = abs(sceneDepth - focusPlane);
+  // Keep selected center sharp; focus distance controls how wide the sharp zone is.
+  float focusRadius = mix(0.06, 0.44, focusNorm);
+  float sceneRadius = length(vUv - subjectCenter);
+  float outsideFocus = max(0.0, sceneRadius - focusRadius);
+  float coc = clamp(outsideFocus * 2.4, 0.0, 1.0);
   float protectedSubject = subjectMask(vUv, safeSubjectBox) * subjectBlend;
-  coc = mix(coc, coc * 0.35, protectedSubject);
+  coc = mix(coc, coc * 0.22, protectedSubject);
   float focusBlurStrength = mix(1.2, 9.0, apertureWide);
-  float blurPixels = shutterNorm * 5.0 + coc * focusBlurStrength;
+  float focusDistanceFactor = mix(1.28, 0.72, focusNorm);
+  float blurPixels = shutterNorm * 5.0 + coc * focusBlurStrength * focusDistanceFactor;
   float upscaleMag = max(1.0, max(uEffectScale.x, uEffectScale.y));
   float styleBoost = mix(1.0, pow(upscaleMag, 0.45), uUpscaleStyle);
 
@@ -1069,7 +1072,7 @@ export class WebGLImageRenderer {
     const weightY = clampNumber(this.params.lensShiftY, -1, 1);
     return {
       x: weightX * LENS_SHIFT_MAX_UV_OFFSET,
-      y: -weightY * LENS_SHIFT_MAX_UV_OFFSET
+      y: weightY * LENS_SHIFT_MAX_UV_OFFSET
     };
   }
 
