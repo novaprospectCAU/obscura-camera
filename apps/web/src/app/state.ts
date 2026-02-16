@@ -1,6 +1,6 @@
 export type PreviewMode = "original" | "processed" | "split";
 export type HistogramMode = "original" | "processed" | "composite";
-export type UpscaleFactor = 1 | 1.5 | 2;
+export type UpscaleFactor = 1 | 1.5 | 2 | 2.5 | 3 | 3.5 | 4;
 
 export type CameraParams = {
   exposureEV: number;

@@ -765,6 +765,18 @@ export class WebGLImageRenderer {
   }
 
   private coerceUpscaleFactor(value: number): UpscaleFactor {
+    if (value >= 4) {
+      return 4;
+    }
+    if (value >= 3.5) {
+      return 3.5;
+    }
+    if (value >= 3) {
+      return 3;
+    }
+    if (value >= 2.5) {
+      return 2.5;
+    }
     if (value >= 2) {
       return 2;
     }

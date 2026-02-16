@@ -376,6 +376,10 @@ export class CameraLabApp {
                 <option value="1">1x</option>
                 <option value="1.5">1.5x</option>
                 <option value="2">2x</option>
+                <option value="2.5">2.5x</option>
+                <option value="3">3x</option>
+                <option value="3.5">3.5x</option>
+                <option value="4">4x</option>
               </select>
             </label>
             <p class="hint">Shortcuts: <code>Space</code> A/B, <code>S</code> Split, <code>R</code> Reset</p>
@@ -1339,6 +1343,18 @@ function parseUpscaleFactor(raw: string): UpscaleFactor {
 }
 
 function coerceUpscaleFactor(value: number): UpscaleFactor {
+  if (value >= 4) {
+    return 4;
+  }
+  if (value >= 3.5) {
+    return 3.5;
+  }
+  if (value >= 3) {
+    return 3;
+  }
+  if (value >= 2.5) {
+    return 2.5;
+  }
   if (value >= 2) {
     return 2;
   }
