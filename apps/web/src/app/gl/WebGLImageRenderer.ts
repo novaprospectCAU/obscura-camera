@@ -111,6 +111,73 @@ export class WebGLImageRenderer {
     this.gl.bindTexture(this.gl.TEXTURE_2D, null);
   }
 
+  setVideoSource(video: HTMLVideoElement): void {
+    const width = Math.max(1, video.videoWidth || 1);
+    const height = Math.max(1, video.videoHeight || 1);
+    this.imageWidth = width;
+    this.imageHeight = height;
+
+    this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture);
+    this.gl.pixelStorei(this.gl.UNPACK_FLIP_Y_WEBGL, 1);
+    this.gl.texImage2D(
+      this.gl.TEXTURE_2D,
+      0,
+      this.gl.RGBA,
+      width,
+      height,
+      0,
+      this.gl.RGBA,
+      this.gl.UNSIGNED_BYTE,
+      null
+    );
+    this.gl.texSubImage2D(
+      this.gl.TEXTURE_2D,
+      0,
+      0,
+      0,
+      this.gl.RGBA,
+      this.gl.UNSIGNED_BYTE,
+      video
+    );
+    this.gl.bindTexture(this.gl.TEXTURE_2D, null);
+  }
+
+  updateVideoFrame(video: HTMLVideoElement): void {
+    const width = Math.max(1, video.videoWidth || 1);
+    const height = Math.max(1, video.videoHeight || 1);
+    const needsRealloc = width !== this.imageWidth || height !== this.imageHeight;
+
+    this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture);
+    this.gl.pixelStorei(this.gl.UNPACK_FLIP_Y_WEBGL, 1);
+
+    if (needsRealloc) {
+      this.imageWidth = width;
+      this.imageHeight = height;
+      this.gl.texImage2D(
+        this.gl.TEXTURE_2D,
+        0,
+        this.gl.RGBA,
+        width,
+        height,
+        0,
+        this.gl.RGBA,
+        this.gl.UNSIGNED_BYTE,
+        null
+      );
+    }
+
+    this.gl.texSubImage2D(
+      this.gl.TEXTURE_2D,
+      0,
+      0,
+      0,
+      this.gl.RGBA,
+      this.gl.UNSIGNED_BYTE,
+      video
+    );
+    this.gl.bindTexture(this.gl.TEXTURE_2D, null);
+  }
+
   render(): void {
     this.gl.clearColor(0.08, 0.09, 0.11, 1);
     this.gl.clear(this.gl.COLOR_BUFFER_BIT);
@@ -260,4 +327,3 @@ export class WebGLImageRenderer {
     return uniform;
   }
 }
-

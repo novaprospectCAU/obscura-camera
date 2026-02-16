@@ -1,8 +1,12 @@
 import { WebGLImageRenderer } from "./gl/WebGLImageRenderer";
 
+type SourceMode = "image" | "webcam";
+
 type AppElements = {
   canvas: HTMLCanvasElement;
   fileInput: HTMLInputElement;
+  imageSourceButton: HTMLButtonElement;
+  webcamSourceButton: HTMLButtonElement;
   fileName: HTMLElement;
   status: HTMLElement;
   previewPanel: HTMLElement;
@@ -13,6 +17,12 @@ export class CameraLabApp {
   private readonly root: HTMLElement;
   private renderer?: WebGLImageRenderer;
   private elements?: AppElements;
+  private sourceMode: SourceMode = "image";
+  private hasImage = false;
+  private webcamStream?: MediaStream;
+  private webcamVideo?: HTMLVideoElement;
+  private webcamFrameHandle?: number;
+  private sourceSwitchToken = 0;
 
   private readonly onResize = () => {
     this.renderer?.resize();
@@ -20,6 +30,10 @@ export class CameraLabApp {
 
   private readonly blockWindowDrop = (event: DragEvent) => {
     event.preventDefault();
+  };
+
+  private readonly onPageHide = () => {
+    this.disableWebcam();
   };
 
   constructor(root: HTMLElement) {
@@ -32,8 +46,13 @@ export class CameraLabApp {
         <aside class="control-panel">
           <h1>CameraLab Web MVP</h1>
           <p class="lead">
-            T0-T2 implementation: upload an image and preview it on a WebGL2 fullscreen quad.
+            T3 implementation: switch between uploaded image and live webcam preview.
           </p>
+
+          <div class="source-toggle" role="group" aria-label="Source Select">
+            <button id="source-image" class="source-button is-active" type="button">Image</button>
+            <button id="source-webcam" class="source-button" type="button">Webcam</button>
+          </div>
 
           <label class="file-button" for="file-input">Choose Image</label>
           <input id="file-input" type="file" accept="image/*" />
@@ -55,12 +74,15 @@ export class CameraLabApp {
 
     this.bindFileInput();
     this.bindDragAndDrop();
+    this.bindSourceButtons();
 
     window.addEventListener("resize", this.onResize);
     window.addEventListener("dragover", this.blockWindowDrop);
     window.addEventListener("drop", this.blockWindowDrop);
+    window.addEventListener("pagehide", this.onPageHide);
 
     this.renderer.resize();
+    this.refreshEmptyState();
     this.renderer.render();
   }
 
@@ -68,6 +90,8 @@ export class CameraLabApp {
     return {
       canvas: this.requireElement<HTMLCanvasElement>("#preview-canvas"),
       fileInput: this.requireElement<HTMLInputElement>("#file-input"),
+      imageSourceButton: this.requireElement<HTMLButtonElement>("#source-image"),
+      webcamSourceButton: this.requireElement<HTMLButtonElement>("#source-webcam"),
       fileName: this.requireElement<HTMLElement>("#file-name"),
       status: this.requireElement<HTMLElement>("#status"),
       previewPanel: this.requireElement<HTMLElement>("#preview-panel"),
@@ -80,14 +104,28 @@ export class CameraLabApp {
       return;
     }
 
-    this.elements.fileInput.addEventListener("change", async () => {
-      const file = this.elements?.fileInput.files?.[0];
+    const { fileInput } = this.elements;
+    fileInput.addEventListener("change", async () => {
+      const file = fileInput.files?.[0];
       if (!file) {
         return;
       }
 
       await this.loadIntoRenderer(file);
-      this.elements.fileInput.value = "";
+      fileInput.value = "";
+    });
+  }
+
+  private bindSourceButtons(): void {
+    if (!this.elements) {
+      return;
+    }
+
+    this.elements.imageSourceButton.addEventListener("click", () => {
+      void this.setSourceMode("image");
+    });
+    this.elements.webcamSourceButton.addEventListener("click", () => {
+      void this.setSourceMode("webcam");
     });
   }
 
@@ -140,16 +178,189 @@ export class CameraLabApp {
 
     try {
       const image = await this.loadImageFile(file);
+
+      this.sourceSwitchToken += 1;
+      this.disableWebcam();
+      this.sourceMode = "image";
+      this.updateSourceButtons();
+
       this.renderer.setImage(image);
       this.renderer.render();
 
-      this.elements.emptyState.classList.add("is-hidden");
+      this.hasImage = true;
       this.elements.fileName.textContent = file.name;
       this.elements.status.textContent = `Loaded ${file.name}`;
+      this.refreshEmptyState();
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown loading error.";
       this.elements.status.textContent = `Failed to load image: ${message}`;
     }
+  }
+
+  private async setSourceMode(mode: SourceMode): Promise<void> {
+    if (!this.elements || !this.renderer || mode === this.sourceMode) {
+      return;
+    }
+
+    if (mode === "image") {
+      this.sourceSwitchToken += 1;
+      this.disableWebcam();
+      this.sourceMode = "image";
+      this.updateSourceButtons();
+      this.refreshEmptyState();
+      this.renderer.render();
+      this.elements.status.textContent = this.hasImage
+        ? "Showing uploaded image."
+        : "Waiting for image input.";
+      return;
+    }
+
+    this.sourceMode = "webcam";
+    const switchToken = ++this.sourceSwitchToken;
+    this.updateSourceButtons();
+    this.refreshEmptyState();
+    this.elements.status.textContent = "Requesting webcam permission...";
+
+    try {
+      await this.startWebcam();
+      if (switchToken !== this.sourceSwitchToken || this.sourceMode !== "webcam") {
+        this.disableWebcam();
+        return;
+      }
+
+      this.elements.status.textContent = "Webcam active.";
+      this.refreshEmptyState();
+      this.startWebcamRenderLoop();
+    } catch (error) {
+      if (switchToken !== this.sourceSwitchToken || this.sourceMode !== "webcam") {
+        return;
+      }
+
+      this.disableWebcam();
+      this.sourceMode = "image";
+      this.updateSourceButtons();
+      this.refreshEmptyState();
+
+      const message = error instanceof Error ? error.message : "Failed to start webcam.";
+      this.elements.status.textContent = `Webcam unavailable: ${message}`;
+    }
+  }
+
+  private async startWebcam(): Promise<void> {
+    if (this.webcamStream && this.webcamVideo) {
+      return;
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error("getUserMedia is not supported in this browser.");
+    }
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: true,
+      audio: false
+    });
+
+    const video = document.createElement("video");
+    video.muted = true;
+    video.playsInline = true;
+    video.autoplay = true;
+    video.srcObject = stream;
+
+    try {
+      await video.play();
+      await this.waitForVideoFrame(video);
+    } catch (error) {
+      stream.getTracks().forEach((track) => track.stop());
+      throw error;
+    }
+
+    this.webcamStream = stream;
+    this.webcamVideo = video;
+    this.renderer?.setVideoSource(video);
+  }
+
+  private waitForVideoFrame(video: HTMLVideoElement): Promise<void> {
+    if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+      return Promise.resolve();
+    }
+
+    return new Promise((resolve, reject) => {
+      const onLoadedData = () => {
+        cleanup();
+        resolve();
+      };
+      const onError = () => {
+        cleanup();
+        reject(new Error("Webcam stream did not produce frames."));
+      };
+      const cleanup = () => {
+        video.removeEventListener("loadeddata", onLoadedData);
+        video.removeEventListener("error", onError);
+      };
+
+      video.addEventListener("loadeddata", onLoadedData, { once: true });
+      video.addEventListener("error", onError, { once: true });
+    });
+  }
+
+  private startWebcamRenderLoop(): void {
+    this.stopWebcamRenderLoop();
+
+    const renderFrame = () => {
+      if (!this.renderer || !this.webcamVideo || this.sourceMode !== "webcam") {
+        return;
+      }
+
+      this.renderer.updateVideoFrame(this.webcamVideo);
+      this.renderer.render();
+      this.webcamFrameHandle = requestAnimationFrame(renderFrame);
+    };
+
+    renderFrame();
+  }
+
+  private stopWebcamRenderLoop(): void {
+    if (this.webcamFrameHandle !== undefined) {
+      cancelAnimationFrame(this.webcamFrameHandle);
+      this.webcamFrameHandle = undefined;
+    }
+  }
+
+  private disableWebcam(): void {
+    this.stopWebcamRenderLoop();
+
+    if (this.webcamVideo) {
+      this.webcamVideo.pause();
+      this.webcamVideo.srcObject = null;
+      this.webcamVideo = undefined;
+    }
+
+    if (this.webcamStream) {
+      this.webcamStream.getTracks().forEach((track) => track.stop());
+      this.webcamStream = undefined;
+    }
+  }
+
+  private updateSourceButtons(): void {
+    if (!this.elements) {
+      return;
+    }
+
+    this.elements.imageSourceButton.classList.toggle("is-active", this.sourceMode === "image");
+    this.elements.webcamSourceButton.classList.toggle("is-active", this.sourceMode === "webcam");
+  }
+
+  private refreshEmptyState(): void {
+    if (!this.elements) {
+      return;
+    }
+
+    const hide = this.sourceMode === "webcam" || this.hasImage;
+    this.elements.emptyState.classList.toggle("is-hidden", hide);
+    this.elements.emptyState.textContent =
+      this.sourceMode === "webcam"
+        ? "Starting webcam..."
+        : 'Drop image here or use "Choose Image"';
   }
 
   private loadImageFile(file: File): Promise<HTMLImageElement> {

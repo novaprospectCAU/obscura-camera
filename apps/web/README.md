@@ -1,4 +1,4 @@
-# CameraLab Web MVP (`T0-T2`)
+# CameraLab Web MVP (`T0-T3`)
 
 This folder contains the initial web MVP with:
 
@@ -6,10 +6,11 @@ This folder contains the initial web MVP with:
 - Split layout: left control panel + right canvas preview
 - WebGL2 fullscreen quad renderer for an uploaded image texture
 - Image loading via file input and drag & drop
+- Webcam input via `getUserMedia`
+- Source toggle (image/webcam)
 
 Not included yet:
 
-- Webcam capture
 - Effects pipeline
 - Multi-pass rendering
 
@@ -22,6 +23,7 @@ npm run dev
 ```
 
 Open `http://localhost:5173`.
+When selecting `Webcam`, allow camera permission in your browser.
 
 ## Other commands
 
@@ -36,4 +38,3 @@ npm run preview
 
 - App/UI logic: `src/app/*`
 - WebGL renderer: `src/app/gl/*`
-

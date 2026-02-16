@@ -58,6 +58,27 @@ body {
   line-height: 1.4;
 }
 
+.source-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.45rem;
+}
+
+.source-button {
+  border: 1px solid var(--panel-border);
+  background: #11161e;
+  color: var(--text);
+  border-radius: 0.45rem;
+  padding: 0.5rem 0.7rem;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.source-button.is-active {
+  border-color: color-mix(in srgb, var(--accent), black 20%);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent), white 10%), color-mix(in srgb, var(--accent), black 30%));
+}
+
 #file-input {
   display: none;
 }
@@ -144,4 +165,3 @@ body {
     gap: 0.65rem;
   }
 }
-
