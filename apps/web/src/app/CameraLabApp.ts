@@ -75,6 +75,8 @@ type SubjectContext = {
   backlit: boolean;
 };
 
+type InteractionMode = "aeaf" | "lens-select" | "pan";
+
 type SliderControlDef = {
   key: NumericParamKey;
   label: string;
@@ -105,6 +107,14 @@ type DialBinding = {
 
 type ControlTheme = "sliders" | "camera";
 
+type PanDragState = {
+  pointerId: number;
+  startClientX: number;
+  startClientY: number;
+  startPanX: number;
+  startPanY: number;
+};
+
 type AppElements = {
   canvas: HTMLCanvasElement;
   fileInput: HTMLInputElement;
@@ -133,6 +143,9 @@ type AppElements = {
   autoExposureToggle: HTMLInputElement;
   autoFocusToggle: HTMLInputElement;
   aeAfLockToggle: HTMLInputElement;
+  interactionModeSelect: HTMLSelectElement;
+  lensShiftReadout: HTMLOutputElement;
+  panReadout: HTMLOutputElement;
   controlThemeSelect: HTMLSelectElement;
   histogramModeSelect: HTMLSelectElement;
   paramControls: HTMLElement;
@@ -148,6 +161,7 @@ type AppElements = {
 const SESSION_STORAGE_KEY = "obscura.session.v1";
 const CUSTOM_PRESETS_STORAGE_KEY = "obscura.custom-presets.v1";
 const CONTROL_THEME_STORAGE_KEY = "obscura.control-theme.v1";
+const INTERACTION_MODE_STORAGE_KEY = "obscura.interaction-mode.v1";
 const AI_API_KEY_STORAGE_KEY = "obscura.ai-api-key.v1";
 const OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
 const OPENAI_MODEL = "gpt-4.1-mini";
@@ -261,26 +275,6 @@ const PARAM_SLIDER_DEFS: SliderControlDef[] = [
     toValue: IDENTITY,
     toRaw: IDENTITY,
     format: (value) => `${value.toFixed(1)}m`
-  },
-  {
-    key: "lensShiftX",
-    label: "Lens Shift X",
-    min: -LENS_SHIFT_WEIGHT_LIMIT,
-    max: LENS_SHIFT_WEIGHT_LIMIT,
-    step: 0.001,
-    toValue: IDENTITY,
-    toRaw: IDENTITY,
-    format: (value) => formatSigned(value, 3)
-  },
-  {
-    key: "lensShiftY",
-    label: "Lens Shift Y",
-    min: -LENS_SHIFT_WEIGHT_LIMIT,
-    max: LENS_SHIFT_WEIGHT_LIMIT,
-    step: 0.001,
-    toValue: IDENTITY,
-    toRaw: IDENTITY,
-    format: (value) => formatSigned(value, 3)
   },
   {
     key: "distortion",
@@ -402,6 +396,9 @@ export class CameraLabApp {
   private renderer?: WebGLImageRenderer;
   private elements?: AppElements;
   private controlTheme: ControlTheme = "sliders";
+  private interactionMode: InteractionMode = "aeaf";
+  private lensSelectLocked = false;
+  private panDragState: PanDragState | null = null;
   private sourceMode: SourceMode = "image";
   private hasImage = false;
   private webcamStream?: MediaStream;
@@ -573,6 +570,16 @@ export class CameraLabApp {
               <span>AE/AF Lock</span>
               <input id="aeaf-lock-toggle" type="checkbox" />
             </label>
+            <label class="upscale-row" for="interaction-mode-select">
+              <span>Interaction Mode</span>
+              <select id="interaction-mode-select">
+                <option value="aeaf">AE/AF</option>
+                <option value="lens-select">Subject Select</option>
+                <option value="pan">Screen Pan</option>
+              </select>
+            </label>
+            <output class="interaction-readout" id="lens-shift-readout">Lens Shift X +0.000, Y +0.000</output>
+            <output class="interaction-readout" id="pan-readout">Pan X +0.000, Y +0.000</output>
             <p class="hint">Shortcuts: <code>Space</code> A/B, <code>S</code> Split, <code>R</code> Reset</p>
           </section>
 
@@ -619,7 +626,9 @@ export class CameraLabApp {
     this.createParameterControls();
     this.createParameterDialControls();
     this.restoreControlTheme();
+    this.restoreInteractionMode();
     this.syncControlThemeView();
+    this.syncInteractionModeView();
     this.bindFileInput();
     this.bindDragAndDrop();
     this.bindSourceButtons();
@@ -627,6 +636,7 @@ export class CameraLabApp {
     this.bindAiControls();
     this.bindPreviewControls();
     this.bindControlTheme();
+    this.bindInteractionMode();
     this.bindMeteringControls();
     this.bindSnapshotControl();
 
@@ -705,6 +715,9 @@ export class CameraLabApp {
       autoExposureToggle: this.requireElement<HTMLInputElement>("#auto-exposure-toggle"),
       autoFocusToggle: this.requireElement<HTMLInputElement>("#auto-focus-toggle"),
       aeAfLockToggle: this.requireElement<HTMLInputElement>("#aeaf-lock-toggle"),
+      interactionModeSelect: this.requireElement<HTMLSelectElement>("#interaction-mode-select"),
+      lensShiftReadout: this.requireElement<HTMLOutputElement>("#lens-shift-readout"),
+      panReadout: this.requireElement<HTMLOutputElement>("#pan-readout"),
       controlThemeSelect: this.requireElement<HTMLSelectElement>("#control-theme-select"),
       histogramModeSelect: this.requireElement<HTMLSelectElement>("#histogram-mode-select"),
       paramControls: this.requireElement<HTMLElement>("#param-controls"),
@@ -1010,9 +1023,31 @@ export class CameraLabApp {
     });
   }
 
+  private bindInteractionMode(): void {
+    if (!this.elements) {
+      return;
+    }
+
+    this.elements.interactionModeSelect.addEventListener("change", () => {
+      this.interactionMode = parseInteractionMode(this.elements?.interactionModeSelect.value);
+      this.lensSelectLocked = false;
+      this.panDragState = null;
+      writeStorage(INTERACTION_MODE_STORAGE_KEY, this.interactionMode);
+      this.syncInteractionModeView();
+      this.updateSubjectContextForRenderer(true);
+      this.updateFocusOverlay();
+      this.setStatus(interactionModeHelpMessage(this.interactionMode));
+    });
+  }
+
   private restoreControlTheme(): void {
     const raw = readStorage(CONTROL_THEME_STORAGE_KEY);
     this.controlTheme = parseControlTheme(raw);
+  }
+
+  private restoreInteractionMode(): void {
+    const raw = readStorage(INTERACTION_MODE_STORAGE_KEY);
+    this.interactionMode = parseInteractionMode(raw);
   }
 
   private syncControlThemeView(): void {
@@ -1024,6 +1059,17 @@ export class CameraLabApp {
     const isCameraTheme = this.controlTheme === "camera";
     this.elements.paramControls.classList.toggle("is-hidden", isCameraTheme);
     this.elements.paramDialControls.classList.toggle("is-hidden", !isCameraTheme);
+  }
+
+  private syncInteractionModeView(): void {
+    if (!this.elements) {
+      return;
+    }
+
+    this.elements.interactionModeSelect.value = this.interactionMode;
+    this.elements.previewPanel.classList.toggle("is-pan-mode", this.interactionMode === "pan");
+    this.elements.previewPanel.classList.toggle("is-lens-select-mode", this.interactionMode === "lens-select");
+    this.elements.previewPanel.classList.remove("is-panning");
   }
 
   private stepDialValue(key: NumericParamKey, delta: -1 | 1): void {
@@ -1098,7 +1144,19 @@ export class CameraLabApp {
     const { canvas, autoExposureToggle, autoFocusToggle, aeAfLockToggle } = this.elements;
 
     canvas.addEventListener("pointerdown", (event) => {
-      this.handleMeteringTap(event);
+      this.handlePreviewPointerDown(event);
+    });
+
+    canvas.addEventListener("pointermove", (event) => {
+      this.handlePreviewPointerMove(event);
+    });
+
+    canvas.addEventListener("pointerup", (event) => {
+      this.handlePreviewPointerUp(event);
+    });
+
+    canvas.addEventListener("pointercancel", (event) => {
+      this.handlePreviewPointerUp(event);
     });
 
     aeAfLockToggle.addEventListener("change", () => {
@@ -1114,6 +1172,112 @@ export class CameraLabApp {
       const state = autoFocusToggle.checked ? "enabled" : "disabled";
       this.setStatus(`Auto Focus ${state}.`);
     });
+  }
+
+  private handlePreviewPointerDown(event: PointerEvent): void {
+    if (!this.elements) {
+      return;
+    }
+
+    if (this.interactionMode === "aeaf") {
+      this.handleMeteringTap(event);
+      return;
+    }
+
+    if (event.button !== 0) {
+      return;
+    }
+
+    if (this.interactionMode === "lens-select") {
+      event.preventDefault();
+      if (this.lensSelectLocked) {
+        this.lensSelectLocked = false;
+        this.setStatus("Lens position unlocked.");
+        this.updateFocusOverlay();
+        return;
+      }
+
+      const uv = this.mapPointerToActiveUv(event.clientX, event.clientY);
+      if (!uv) {
+        return;
+      }
+      this.applyLensShiftFromUv(uv.x, uv.y);
+      this.lensSelectLocked = true;
+      this.setStatus("Lens position locked.");
+      this.updateFocusOverlay();
+      return;
+    }
+
+    if (!this.isPanAvailable()) {
+      this.setStatus("Screen pan is available only when zoomed in.");
+      return;
+    }
+
+    const state = this.params.getState();
+    this.panDragState = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startPanX: state.viewPanX,
+      startPanY: state.viewPanY
+    };
+    this.elements.canvas.setPointerCapture(event.pointerId);
+    this.elements.previewPanel.classList.add("is-panning");
+    this.setStatus("Panning view...");
+  }
+
+  private handlePreviewPointerMove(event: PointerEvent): void {
+    if (!this.elements) {
+      return;
+    }
+
+    if (this.interactionMode === "lens-select" && !this.lensSelectLocked) {
+      const uv = this.mapPointerToActiveUv(event.clientX, event.clientY);
+      if (!uv) {
+        return;
+      }
+      this.applyLensShiftFromUv(uv.x, uv.y);
+      this.updateFocusOverlay();
+      return;
+    }
+
+    if (this.interactionMode !== "pan" || !this.panDragState || this.panDragState.pointerId !== event.pointerId) {
+      return;
+    }
+
+    event.preventDefault();
+    const rect = this.elements.canvas.getBoundingClientRect();
+    if (rect.width <= 1 || rect.height <= 1) {
+      return;
+    }
+
+    const zoom = this.computeFocalZoom(this.params.getState().focalLength);
+    const panLimitUv = Math.max(0, (zoom - 1) / (2 * zoom));
+    if (panLimitUv <= 1e-5) {
+      return;
+    }
+
+    const deltaX = event.clientX - this.panDragState.startClientX;
+    const deltaY = event.clientY - this.panDragState.startClientY;
+    const nextPanX = clamp(this.panDragState.startPanX - deltaX / (rect.width * panLimitUv), -1, 1);
+    const nextPanY = clamp(this.panDragState.startPanY + deltaY / (rect.height * panLimitUv), -1, 1);
+    this.params.patch({
+      viewPanX: nextPanX,
+      viewPanY: nextPanY
+    });
+  }
+
+  private handlePreviewPointerUp(event: PointerEvent): void {
+    if (!this.elements || !this.panDragState) {
+      return;
+    }
+    if (this.panDragState.pointerId !== event.pointerId) {
+      return;
+    }
+
+    this.panDragState = null;
+    this.elements.previewPanel.classList.remove("is-panning");
+    this.setStatus("View pan updated.");
   }
 
   private handleMeteringTap(event: PointerEvent): void {
@@ -1158,6 +1322,44 @@ export class CameraLabApp {
       updates.push(`Focus ${patch.focusDistance.toFixed(1)}m`);
     }
     this.setStatus(`Metered: ${updates.join(", ")}`);
+  }
+
+  private mapPointerToActiveUv(clientX: number, clientY: number): { x: number; y: number } | null {
+    if (!this.elements) {
+      return null;
+    }
+
+    const dims = this.getActiveSourceDimensions();
+    if (!dims) {
+      return null;
+    }
+
+    const rect = this.elements.canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      return null;
+    }
+
+    const nx = clamp((clientX - rect.left) / rect.width, 0, 1);
+    const ny = clamp((clientY - rect.top) / rect.height, 0, 1);
+    return mapCanvasToImageUv(nx, ny, rect.width, rect.height, dims.width, dims.height);
+  }
+
+  private applyLensShiftFromUv(uvX: number, uvY: number): void {
+    const shiftX = clamp((uvX - 0.5) / LENS_SHIFT_MAX_UV_OFFSET, -1, 1);
+    const shiftY = clamp((0.5 - uvY) / LENS_SHIFT_MAX_UV_OFFSET, -1, 1);
+    this.params.patch({
+      lensShiftX: shiftX,
+      lensShiftY: shiftY
+    });
+  }
+
+  private isPanAvailable(): boolean {
+    return this.computeFocalZoom(this.params.getState().focalLength) > 1.01;
+  }
+
+  private computeFocalZoom(focalLength: number): number {
+    const focalNorm = clamp((focalLength - 18) / (120 - 18), 0, 1);
+    return 1 + focalNorm * (2.2 - 1);
   }
 
   private sampleMeteringAt(clientX: number, clientY: number): { luminance: number; depthNorm: number } | null {
@@ -1321,6 +1523,9 @@ export class CameraLabApp {
     this.elements.upscaleStyleSelect.value = state.upscaleStyle;
     this.elements.performanceSelect.value = `${state.previewScale}`;
     this.elements.histogramModeSelect.value = state.histogramMode;
+    this.elements.interactionModeSelect.value = this.interactionMode;
+    this.elements.lensShiftReadout.textContent = `Lens Shift X ${formatSigned(state.lensShiftX, 3)}, Y ${formatSigned(state.lensShiftY, 3)}`;
+    this.elements.panReadout.textContent = `Pan X ${formatSigned(state.viewPanX, 3)}, Y ${formatSigned(state.viewPanY, 3)}`;
   }
 
   private async loadIntoRenderer(file: File): Promise<void> {
@@ -1911,9 +2116,11 @@ export class CameraLabApp {
 
     const now = performance.now();
     if (!force && now - this.lastSubjectAnalysisMs < SUBJECT_ANALYSIS_INTERVAL_MS) {
-      if (this.latestSubjectContext) {
-        this.renderer.setSubjectContext(toRendererSubjectContext(this.latestSubjectContext));
-      }
+      const rendererContext =
+        this.latestSubjectContext && this.interactionMode !== "lens-select"
+          ? toRendererSubjectContext(this.latestSubjectContext)
+          : null;
+      this.renderer.setSubjectContext(rendererContext);
       this.updateFocusOverlay();
       return this.latestSubjectContext;
     }
@@ -1921,7 +2128,11 @@ export class CameraLabApp {
     this.lastSubjectAnalysisMs = now;
     const nextContext = this.analyzeSubjectContext();
     this.latestSubjectContext = nextContext;
-    this.renderer.setSubjectContext(nextContext ? toRendererSubjectContext(nextContext) : null);
+    const rendererContext =
+      nextContext && this.interactionMode !== "lens-select"
+        ? toRendererSubjectContext(nextContext)
+        : null;
+    this.renderer.setSubjectContext(rendererContext);
     this.updateFocusOverlay();
     return nextContext;
   }
@@ -1933,23 +2144,16 @@ export class CameraLabApp {
 
     const { focusRing } = this.elements;
     const hasSource = this.sourceMode === "webcam" || this.hasImage;
-    focusRing.classList.toggle("is-hidden", !hasSource);
-    if (!hasSource) {
+    const shouldShow = hasSource && this.interactionMode === "lens-select";
+    focusRing.classList.toggle("is-hidden", !shouldShow);
+    if (!shouldShow) {
       return;
     }
 
     const params = state ?? this.params.getState();
     const lensCenter = lensCenterFromShiftWeights(params.lensShiftX, params.lensShiftY);
-    const lensCenterX = lensCenter.x;
-    const lensCenterY = lensCenter.y;
-
-    let focusX = lensCenterX;
-    let focusY = lensCenterY;
-    if (this.latestSubjectContext) {
-      const rendererSubject = toRendererSubjectContext(this.latestSubjectContext);
-      focusX = lerp(lensCenterX, rendererSubject.center.x, rendererSubject.strength);
-      focusY = lerp(lensCenterY, rendererSubject.center.y, rendererSubject.strength);
-    }
+    const focusX = lensCenter.x;
+    const focusY = lensCenter.y;
 
     const apertureNorm = clamp((params.aperture - 1.4) / (22 - 1.4), 0, 1);
     const ringSize = Math.round(74 + (1 - apertureNorm) * 58);
@@ -2125,6 +2329,8 @@ function toSessionPatch(value: unknown): Partial<CameraParams> | null {
       LENS_SHIFT_WEIGHT_LIMIT
     );
   }
+  if (isFiniteNumber(candidate.viewPanX)) patch.viewPanX = clamp(candidate.viewPanX, -1, 1);
+  if (isFiniteNumber(candidate.viewPanY)) patch.viewPanY = clamp(candidate.viewPanY, -1, 1);
   if (isFiniteNumber(candidate.distortion)) patch.distortion = candidate.distortion;
   if (isFiniteNumber(candidate.vignette)) patch.vignette = candidate.vignette;
   if (isFiniteNumber(candidate.chromaAberration)) patch.chromaAberration = candidate.chromaAberration;
@@ -3035,6 +3241,26 @@ function parseControlTheme(raw: string | null | undefined): ControlTheme {
   return raw === "camera" ? "camera" : "sliders";
 }
 
+function parseInteractionMode(raw: string | null | undefined): InteractionMode {
+  if (raw === "lens-select") {
+    return "lens-select";
+  }
+  if (raw === "pan") {
+    return "pan";
+  }
+  return "aeaf";
+}
+
+function interactionModeHelpMessage(mode: InteractionMode): string {
+  if (mode === "aeaf") {
+    return "AE/AF mode: tap preview to meter exposure and focus.";
+  }
+  if (mode === "lens-select") {
+    return "Subject Select mode: move mouse to place lens, click to lock/unlock.";
+  }
+  return "Screen Pan mode: drag to move when zoomed in.";
+}
+
 function dialKindForKey(key: NumericParamKey): DialKind {
   if (key === "aperture") {
     return "aperture";
@@ -3160,10 +3386,6 @@ function waitForNextFrame(): Promise<void> {
   return new Promise((resolve) => {
     requestAnimationFrame(() => resolve());
   });
-}
-
-function lerp(a: number, b: number, t: number): number {
-  return a + (b - a) * t;
 }
 
 function lensCenterFromShiftWeights(shiftX: number, shiftY: number): { x: number; y: number } {

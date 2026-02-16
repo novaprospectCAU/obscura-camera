@@ -71,6 +71,7 @@ uniform float uFocalLength;
 uniform float uChromaAberration;
 uniform float uVignette;
 uniform vec2 uLensShift;
+uniform vec2 uViewPan;
 uniform vec2 uSubjectCenter;
 uniform float uSubjectStrength;
 
@@ -90,7 +91,9 @@ vec2 applyLensUv(vec2 uv) {
 
   float focalNorm = clamp((uFocalLength - 18.0) / (120.0 - 18.0), 0.0, 1.0);
   float zoom = mix(1.0, 2.2, focalNorm);
-  return (distortedUv - lensCenter) / zoom + lensCenter;
+  float panLimit = max(0.0, (zoom - 1.0) / (2.0 * zoom));
+  vec2 panOffset = clamp(uViewPan, vec2(-1.0), vec2(1.0)) * vec2(panLimit, -panLimit);
+  return (distortedUv - lensCenter) / zoom + lensCenter + panOffset;
 }
 
 vec3 sampleWithChroma(vec2 uv) {
@@ -362,6 +365,7 @@ export class WebGLImageRenderer {
   private readonly lensChromaUniform: WebGLUniformLocation;
   private readonly lensVignetteUniform: WebGLUniformLocation;
   private readonly lensShiftUniform: WebGLUniformLocation;
+  private readonly lensViewPanUniform: WebGLUniformLocation;
   private readonly lensSubjectCenterUniform: WebGLUniformLocation;
   private readonly lensSubjectStrengthUniform: WebGLUniformLocation;
 
@@ -452,6 +456,7 @@ export class WebGLImageRenderer {
     this.lensChromaUniform = this.requireUniform(this.lensProgram, "uChromaAberration");
     this.lensVignetteUniform = this.requireUniform(this.lensProgram, "uVignette");
     this.lensShiftUniform = this.requireUniform(this.lensProgram, "uLensShift");
+    this.lensViewPanUniform = this.requireUniform(this.lensProgram, "uViewPan");
     this.lensSubjectCenterUniform = this.requireUniform(this.lensProgram, "uSubjectCenter");
     this.lensSubjectStrengthUniform = this.requireUniform(this.lensProgram, "uSubjectStrength");
 
@@ -725,6 +730,11 @@ export class WebGLImageRenderer {
     this.gl.uniform1f(this.lensChromaUniform, this.params.chromaAberration);
     this.gl.uniform1f(this.lensVignetteUniform, this.params.vignette);
     this.gl.uniform2f(this.lensShiftUniform, lensShift.x, lensShift.y);
+    this.gl.uniform2f(
+      this.lensViewPanUniform,
+      clampNumber(this.params.viewPanX, -1, 1),
+      clampNumber(this.params.viewPanY, -1, 1)
+    );
     this.gl.uniform2f(
       this.lensSubjectCenterUniform,
       this.subjectContext.center.x,

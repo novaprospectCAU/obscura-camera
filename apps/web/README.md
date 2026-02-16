@@ -20,6 +20,7 @@ This folder contains the initial web MVP with:
 - Session state restore on reload (localStorage)
 - Camera color controls: white balance (temp/tint), contrast, saturation
 - Lens position controls: `Lens Shift X/Y` weight (`-1..+1`) to move optical center
+- Interaction modes: `AE/AF`, `Subject Select` (mouse-follow + click lock), `Screen Pan` (drag when zoomed)
 - Upscaling controls: 1x / 1.5x / 2x / 2.5x / 3x / 3.5x / 4x internal processing + scaled PNG export
 - Upscale style modes: `Balanced` (look-matched) vs `Enhanced` (strong X1~X4 visual difference)
 - Tap-to-meter Auto Exposure / Auto Focus with AE/AF lock toggle
@@ -29,7 +30,7 @@ This folder contains the initial web MVP with:
 - AI prompt control: enter OpenAI API key + natural-language look prompt to auto-adjust camera settings
 - Subject-aware AI prompt context (center/bbox/brightness/sharpness/backlit) to stabilize exposure/focus suggestions
 - Subject-aware rendering anchor: focus/depth and vignette weighting adapt to detected subject position instead of fixed screen center
-- Transparent on-canvas focus ring overlay indicating current focus anchor
+- Transparent on-canvas focus ring overlay (shown in `Subject Select` mode)
 
 Not included yet:
 
