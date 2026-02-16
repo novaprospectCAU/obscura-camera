@@ -1542,6 +1542,10 @@ export class CameraLabApp {
       strength: marker.strength
     }));
     this.renderer?.setLensMarkers(rendererMarkers);
+    if (this.renderer && (this.sourceMode !== "webcam" || !this.webcamVideo)) {
+      this.renderer.render();
+      this.drawHistogram();
+    }
     this.persistSessionState(this.params.getState());
   }
 
