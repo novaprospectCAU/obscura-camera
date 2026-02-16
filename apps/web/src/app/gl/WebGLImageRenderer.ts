@@ -20,11 +20,22 @@ export type RendererSubjectContext = {
   strength: number;
 };
 
+export type RendererLensMarkerKind = "focus" | "blur" | "light-natural" | "light-artificial";
+
+export type RendererLensMarker = {
+  kind: RendererLensMarkerKind;
+  x: number;
+  y: number;
+  radius: number;
+  strength: number;
+};
+
 const HISTOGRAM_BINS = 64;
 const HISTOGRAM_SIZE = 128;
 const HISTOGRAM_INTERVAL_MS = 200;
 const DEFAULT_MAX_PROCESS_PIXELS = 32_000_000;
 const LENS_SHIFT_MAX_UV_OFFSET = 0.48;
+const MAX_EFFECT_MARKERS = 6;
 const DEFAULT_SUBJECT_CONTEXT: RendererSubjectContext = {
   center: { x: 0.5, y: 0.5 },
   box: { x: 0.3, y: 0.3, width: 0.4, height: 0.4 },
@@ -158,6 +169,14 @@ uniform float uFrame;
 uniform vec2 uSubjectCenter;
 uniform vec4 uSubjectBox;
 uniform float uSubjectStrength;
+uniform int uFocusMarkerCount;
+uniform vec4 uFocusMarkers[6];
+uniform int uBlurMarkerCount;
+uniform vec4 uBlurMarkers[6];
+uniform int uNaturalLightCount;
+uniform vec4 uNaturalLights[6];
+uniform int uArtificialLightCount;
+uniform vec4 uArtificialLights[6];
 
 out vec4 outColor;
 
@@ -208,6 +227,25 @@ float subjectMask(vec2 uv, vec4 box) {
   return clamp(left * right * top * bottom, 0.0, 1.0);
 }
 
+float markerInfluence(vec2 uv, vec4 marker) {
+  float radius = max(marker.z, 1e-4);
+  float distanceToCenter = distance(uv, marker.xy);
+  float core = radius * 0.16;
+  float mask = 1.0 - smoothstep(core, radius, distanceToCenter);
+  return mask * clamp(marker.w, 0.0, 1.0);
+}
+
+float accumulateMarkerInfluence(vec2 uv, vec4 markers[6], int markerCount) {
+  float influence = 0.0;
+  for (int i = 0; i < 6; i += 1) {
+    if (i >= markerCount) {
+      break;
+    }
+    influence += markerInfluence(uv, markers[i]);
+  }
+  return clamp(influence, 0.0, 1.0);
+}
+
 void main() {
   float shutterNorm = clamp(
     (log(uShutter) - log(1.0 / 8000.0)) / (log(1.0 / 15.0) - log(1.0 / 8000.0)),
@@ -233,6 +271,10 @@ void main() {
   float sceneRadius = length(vUv - subjectCenter);
   float outsideFocus = max(0.0, sceneRadius - focusRadius);
   float coc = clamp(outsideFocus * 2.4, 0.0, 1.0);
+  float focusMarkerInfluence = accumulateMarkerInfluence(vUv, uFocusMarkers, uFocusMarkerCount);
+  float blurMarkerInfluence = accumulateMarkerInfluence(vUv, uBlurMarkers, uBlurMarkerCount);
+  coc *= (1.0 - focusMarkerInfluence * 0.86);
+  coc = clamp(coc + blurMarkerInfluence * 0.82, 0.0, 1.0);
   float protectedSubject = subjectMask(vUv, safeSubjectBox) * subjectBlend;
   coc = mix(coc, coc * 0.22, protectedSubject);
   float focusBlurStrength = mix(1.2, 9.0, apertureWide);
@@ -273,6 +315,13 @@ void main() {
   float detailGain = uSharpen * 1.35;
   detailGain = mix(detailGain, detailGain + (styleBoost - 1.0) * 0.24, uUpscaleStyle);
   color += detail * detailGain;
+
+  float naturalLightInfluence = accumulateMarkerInfluence(vUv, uNaturalLights, uNaturalLightCount);
+  float artificialLightInfluence = accumulateMarkerInfluence(vUv, uArtificialLights, uArtificialLightCount);
+  float lightLift = naturalLightInfluence * 0.32 + artificialLightInfluence * 0.27;
+  color *= 1.0 + lightLift;
+  color += vec3(0.08, 0.055, -0.01) * naturalLightInfluence;
+  color += vec3(0.03, 0.04, 0.085) * artificialLightInfluence;
   color = applyWhiteBalance(color);
 
   if (uToneMapEnabled > 0.5) {
@@ -392,6 +441,14 @@ export class WebGLImageRenderer {
   private readonly effectsSubjectCenterUniform: WebGLUniformLocation;
   private readonly effectsSubjectBoxUniform: WebGLUniformLocation;
   private readonly effectsSubjectStrengthUniform: WebGLUniformLocation;
+  private readonly effectsFocusMarkerCountUniform: WebGLUniformLocation;
+  private readonly effectsFocusMarkersUniform: WebGLUniformLocation;
+  private readonly effectsBlurMarkerCountUniform: WebGLUniformLocation;
+  private readonly effectsBlurMarkersUniform: WebGLUniformLocation;
+  private readonly effectsNaturalLightCountUniform: WebGLUniformLocation;
+  private readonly effectsNaturalLightsUniform: WebGLUniformLocation;
+  private readonly effectsArtificialLightCountUniform: WebGLUniformLocation;
+  private readonly effectsArtificialLightsUniform: WebGLUniformLocation;
 
   private readonly compositeOriginalUniform: WebGLUniformLocation;
   private readonly compositeProcessedUniform: WebGLUniformLocation;
@@ -419,6 +476,11 @@ export class WebGLImageRenderer {
   private frameIndex = 0;
   private params: CameraParams = { ...DEFAULT_CAMERA_PARAMS };
   private subjectContext: RendererSubjectContext = { ...DEFAULT_SUBJECT_CONTEXT };
+  private markers: RendererLensMarker[] = [];
+  private readonly focusMarkerData = new Float32Array(MAX_EFFECT_MARKERS * 4);
+  private readonly blurMarkerData = new Float32Array(MAX_EFFECT_MARKERS * 4);
+  private readonly naturalLightData = new Float32Array(MAX_EFFECT_MARKERS * 4);
+  private readonly artificialLightData = new Float32Array(MAX_EFFECT_MARKERS * 4);
   private lastHistogramUpdateMs = -Infinity;
 
   constructor(canvas: HTMLCanvasElement) {
@@ -483,6 +545,14 @@ export class WebGLImageRenderer {
     this.effectsSubjectCenterUniform = this.requireUniform(this.effectsProgram, "uSubjectCenter");
     this.effectsSubjectBoxUniform = this.requireUniform(this.effectsProgram, "uSubjectBox");
     this.effectsSubjectStrengthUniform = this.requireUniform(this.effectsProgram, "uSubjectStrength");
+    this.effectsFocusMarkerCountUniform = this.requireUniform(this.effectsProgram, "uFocusMarkerCount");
+    this.effectsFocusMarkersUniform = this.requireUniform(this.effectsProgram, "uFocusMarkers[0]");
+    this.effectsBlurMarkerCountUniform = this.requireUniform(this.effectsProgram, "uBlurMarkerCount");
+    this.effectsBlurMarkersUniform = this.requireUniform(this.effectsProgram, "uBlurMarkers[0]");
+    this.effectsNaturalLightCountUniform = this.requireUniform(this.effectsProgram, "uNaturalLightCount");
+    this.effectsNaturalLightsUniform = this.requireUniform(this.effectsProgram, "uNaturalLights[0]");
+    this.effectsArtificialLightCountUniform = this.requireUniform(this.effectsProgram, "uArtificialLightCount");
+    this.effectsArtificialLightsUniform = this.requireUniform(this.effectsProgram, "uArtificialLights[0]");
 
     this.compositeOriginalUniform = this.requireUniform(this.compositeProgram, "uOriginal");
     this.compositeProcessedUniform = this.requireUniform(this.compositeProgram, "uProcessed");
@@ -532,6 +602,28 @@ export class WebGLImageRenderer {
       box,
       strength: clampNumber(context.strength, 0, 1)
     };
+  }
+
+  setLensMarkers(markers: readonly RendererLensMarker[]): void {
+    const next: RendererLensMarker[] = [];
+    for (const marker of markers) {
+      if (
+        marker.kind !== "focus" &&
+        marker.kind !== "blur" &&
+        marker.kind !== "light-natural" &&
+        marker.kind !== "light-artificial"
+      ) {
+        continue;
+      }
+      next.push({
+        kind: marker.kind,
+        x: clampNumber(marker.x, 0, 1),
+        y: clampNumber(marker.y, 0, 1),
+        radius: clampNumber(marker.radius, 0.05, 0.45),
+        strength: clampNumber(marker.strength, 0, 1)
+      });
+    }
+    this.markers = next;
   }
 
   getHistogram(): HistogramData {
@@ -801,6 +893,21 @@ export class WebGLImageRenderer {
       this.subjectContext.box.height
     );
     this.gl.uniform1f(this.effectsSubjectStrengthUniform, this.subjectContext.strength);
+    const focusCount = this.populateMarkerUniformData("focus", this.focusMarkerData);
+    const blurCount = this.populateMarkerUniformData("blur", this.blurMarkerData);
+    const naturalLightCount = this.populateMarkerUniformData("light-natural", this.naturalLightData);
+    const artificialLightCount = this.populateMarkerUniformData(
+      "light-artificial",
+      this.artificialLightData
+    );
+    this.gl.uniform1i(this.effectsFocusMarkerCountUniform, focusCount);
+    this.gl.uniform4fv(this.effectsFocusMarkersUniform, this.focusMarkerData);
+    this.gl.uniform1i(this.effectsBlurMarkerCountUniform, blurCount);
+    this.gl.uniform4fv(this.effectsBlurMarkersUniform, this.blurMarkerData);
+    this.gl.uniform1i(this.effectsNaturalLightCountUniform, naturalLightCount);
+    this.gl.uniform4fv(this.effectsNaturalLightsUniform, this.naturalLightData);
+    this.gl.uniform1i(this.effectsArtificialLightCountUniform, artificialLightCount);
+    this.gl.uniform4fv(this.effectsArtificialLightsUniform, this.artificialLightData);
 
     this.gl.drawElements(this.gl.TRIANGLES, 6, this.gl.UNSIGNED_SHORT, 0);
 
@@ -1074,6 +1181,29 @@ export class WebGLImageRenderer {
       x: weightX * LENS_SHIFT_MAX_UV_OFFSET,
       y: weightY * LENS_SHIFT_MAX_UV_OFFSET
     };
+  }
+
+  private populateMarkerUniformData(
+    kind: RendererLensMarkerKind,
+    target: Float32Array
+  ): number {
+    target.fill(0);
+    let count = 0;
+    for (const marker of this.markers) {
+      if (marker.kind !== kind) {
+        continue;
+      }
+      if (count >= MAX_EFFECT_MARKERS) {
+        break;
+      }
+      const base = count * 4;
+      target[base] = clampNumber(marker.x, 0, 1);
+      target[base + 1] = clampNumber(marker.y, 0, 1);
+      target[base + 2] = clampNumber(marker.radius, 0.05, 0.45);
+      target[base + 3] = clampNumber(marker.strength, 0, 1);
+      count += 1;
+    }
+    return count;
   }
 
   private previewModeToUniform(mode: PreviewMode): number {

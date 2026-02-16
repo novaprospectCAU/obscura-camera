@@ -582,25 +582,34 @@ body {
   cursor: crosshair;
 }
 
-.focus-ring {
-  --focus-alpha: 0.36;
+.marker-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.marker-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.marker {
+  --marker-alpha: 0.38;
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 110px;
-  height: 110px;
   transform: translate(-50%, -50%);
   border-radius: 50%;
-  border: 1.5px solid rgb(166 214 255 / var(--focus-alpha));
+  border: 1.5px solid rgb(166 214 255 / var(--marker-alpha));
   background: radial-gradient(
     circle,
-    rgb(91 177 255 / calc(var(--focus-alpha) * 0.22)) 0%,
-    rgb(91 177 255 / calc(var(--focus-alpha) * 0.08)) 32%,
+    rgb(91 177 255 / calc(var(--marker-alpha) * 0.22)) 0%,
+    rgb(91 177 255 / calc(var(--marker-alpha) * 0.08)) 32%,
     rgb(91 177 255 / 0%) 72%
   );
-  box-shadow: 0 0 24px rgb(76 168 255 / calc(var(--focus-alpha) * 0.34));
-  pointer-events: none;
-  z-index: 2;
+  box-shadow: 0 0 22px rgb(76 168 255 / calc(var(--marker-alpha) * 0.34));
   transition:
     left 170ms ease,
     top 170ms ease,
@@ -609,7 +618,7 @@ body {
     opacity 140ms ease;
 }
 
-.focus-ring::before {
+.marker::before {
   content: "";
   position: absolute;
   left: 50%;
@@ -618,11 +627,50 @@ body {
   height: 10px;
   transform: translate(-50%, -50%);
   border-radius: 50%;
-  border: 1px solid rgb(180 225 255 / calc(var(--focus-alpha) * 0.95));
-  background: rgb(130 198 255 / calc(var(--focus-alpha) * 0.35));
+  border: 1px solid rgb(180 225 255 / calc(var(--marker-alpha) * 0.95));
+  background: rgb(130 198 255 / calc(var(--marker-alpha) * 0.35));
 }
 
-.focus-ring.is-hidden {
+.marker--focus {
+  border-color: rgb(170 224 255 / var(--marker-alpha));
+}
+
+.marker--blur {
+  border-color: rgb(255 169 169 / var(--marker-alpha));
+  background: radial-gradient(
+    circle,
+    rgb(255 127 127 / calc(var(--marker-alpha) * 0.20)) 0%,
+    rgb(255 127 127 / calc(var(--marker-alpha) * 0.07)) 35%,
+    rgb(255 127 127 / 0%) 74%
+  );
+}
+
+.marker--light-natural {
+  border-color: rgb(255 216 132 / var(--marker-alpha));
+  background: radial-gradient(
+    circle,
+    rgb(255 205 103 / calc(var(--marker-alpha) * 0.24)) 0%,
+    rgb(255 205 103 / calc(var(--marker-alpha) * 0.10)) 38%,
+    rgb(255 205 103 / 0%) 76%
+  );
+}
+
+.marker--light-artificial {
+  border-color: rgb(167 198 255 / var(--marker-alpha));
+  background: radial-gradient(
+    circle,
+    rgb(131 172 255 / calc(var(--marker-alpha) * 0.24)) 0%,
+    rgb(131 172 255 / calc(var(--marker-alpha) * 0.10)) 38%,
+    rgb(131 172 255 / 0%) 76%
+  );
+}
+
+.marker.is-selected {
+  outline: 1px solid rgb(255 255 255 / 0.72);
+  outline-offset: 2px;
+}
+
+.marker-layer.is-hidden {
   opacity: 0;
 }
 

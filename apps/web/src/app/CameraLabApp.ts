@@ -8,6 +8,8 @@ import {
 } from "./state";
 import {
   type HistogramData,
+  type RendererLensMarker,
+  type RendererLensMarkerKind,
   type RendererSubjectContext,
   WebGLImageRenderer
 } from "./gl/WebGLImageRenderer";
@@ -65,6 +67,19 @@ type AiSuggestedPatch = Partial<
   >
 >;
 
+type MarkerSpec = {
+  kind: MarkerKind;
+  x: number;
+  y: number;
+  radius: number;
+  strength: number;
+};
+
+type AiMarkerPatch = {
+  replace: boolean;
+  markers: MarkerSpec[];
+};
+
 type SubjectContext = {
   center: { x: number; y: number };
   box: { x: number; y: number; width: number; height: number };
@@ -76,6 +91,22 @@ type SubjectContext = {
 };
 
 type InteractionMode = "aeaf" | "lens-select" | "pan";
+
+type MarkerKind = RendererLensMarkerKind;
+
+type LensMarker = {
+  id: string;
+  kind: MarkerKind;
+  x: number;
+  y: number;
+  radius: number;
+  strength: number;
+};
+
+type MarkerDragState = {
+  pointerId: number;
+  markerId: string;
+};
 
 type SliderControlDef = {
   key: NumericParamKey;
@@ -144,6 +175,11 @@ type AppElements = {
   autoFocusToggle: HTMLInputElement;
   aeAfLockToggle: HTMLInputElement;
   interactionModeSelect: HTMLSelectElement;
+  markerKindSelect: HTMLSelectElement;
+  markerAddCenterButton: HTMLButtonElement;
+  markerRemoveSelectedButton: HTMLButtonElement;
+  markerClearButton: HTMLButtonElement;
+  markerReadout: HTMLOutputElement;
   lensShiftReadout: HTMLOutputElement;
   panReadout: HTMLOutputElement;
   controlThemeSelect: HTMLSelectElement;
@@ -154,7 +190,7 @@ type AppElements = {
   fileName: HTMLElement;
   status: HTMLElement;
   previewPanel: HTMLElement;
-  focusRing: HTMLElement;
+  markerLayer: HTMLElement;
   emptyState: HTMLElement;
 };
 
@@ -162,6 +198,7 @@ const SESSION_STORAGE_KEY = "obscura.session.v1";
 const CUSTOM_PRESETS_STORAGE_KEY = "obscura.custom-presets.v1";
 const CONTROL_THEME_STORAGE_KEY = "obscura.control-theme.v1";
 const INTERACTION_MODE_STORAGE_KEY = "obscura.interaction-mode.v1";
+const MARKER_TOOL_STORAGE_KEY = "obscura.marker-tool.v1";
 const AI_API_KEY_STORAGE_KEY = "obscura.ai-api-key.v1";
 const OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
 const OPENAI_MODEL = "gpt-4.1-mini";
@@ -174,6 +211,18 @@ const DIAL_SWEEP_DEG = DIAL_MAX_ANGLE_DEG - DIAL_MIN_ANGLE_DEG;
 const SUBJECT_ANALYSIS_INTERVAL_MS = 320;
 const LENS_SHIFT_WEIGHT_LIMIT = 1;
 const LENS_SHIFT_MAX_UV_OFFSET = 0.48;
+const MARKER_RADIUS_RANGE = { min: 0.07, max: 0.38 } as const;
+const MARKER_STRENGTH_RANGE = { min: 0.2, max: 1 } as const;
+const MAX_MARKERS_PER_KIND = 6;
+
+const MARKER_KIND_ORDER: MarkerKind[] = ["focus", "blur", "light-natural", "light-artificial"];
+
+const MARKER_KIND_LABEL: Record<MarkerKind, string> = {
+  focus: "Focus Lens",
+  blur: "Blur Lens",
+  "light-natural": "Natural Light",
+  "light-artificial": "Artificial Light"
+};
 
 const PARAM_VALUE_LIMITS: Record<NumericParamKey, { min: number; max: number }> = {
   exposureEV: { min: -3, max: 3 },
@@ -397,7 +446,11 @@ export class CameraLabApp {
   private elements?: AppElements;
   private controlTheme: ControlTheme = "sliders";
   private interactionMode: InteractionMode = "aeaf";
-  private lensSelectLocked = false;
+  private markerTool: MarkerKind = "focus";
+  private markers: LensMarker[] = [];
+  private selectedMarkerId: string | null = null;
+  private markerDragState: MarkerDragState | null = null;
+  private markerSeed = 1;
   private panDragState: PanDragState | null = null;
   private sourceMode: SourceMode = "image";
   private hasImage = false;
@@ -455,8 +508,20 @@ export class CameraLabApp {
     if (event.code === "KeyR") {
       event.preventDefault();
       this.params.reset();
+      this.markers = [];
+      this.selectedMarkerId = null;
+      this.pushMarkersToRenderer();
+      this.updateFocusOverlay();
       if (this.elements) {
         this.elements.status.textContent = "Reset to default parameters.";
+      }
+      return;
+    }
+
+    if ((event.code === "Backspace" || event.code === "Delete") && this.selectedMarkerId) {
+      event.preventDefault();
+      if (this.removeMarkerById(this.selectedMarkerId)) {
+        this.setStatus("Selected marker removed.");
       }
     }
   };
@@ -578,6 +643,21 @@ export class CameraLabApp {
                 <option value="pan">Screen Pan</option>
               </select>
             </label>
+            <label class="upscale-row" for="marker-kind-select">
+              <span>Marker Tool</span>
+              <select id="marker-kind-select">
+                <option value="focus">Focus Lens</option>
+                <option value="blur">Blur Lens</option>
+                <option value="light-natural">Natural Light</option>
+                <option value="light-artificial">Artificial Light</option>
+              </select>
+            </label>
+            <div class="marker-actions">
+              <button id="marker-add-center" class="mini-button" type="button">Add Center</button>
+              <button id="marker-remove-selected" class="mini-button is-muted" type="button">Remove Selected</button>
+              <button id="marker-clear" class="mini-button is-muted" type="button">Clear All</button>
+            </div>
+            <output class="interaction-readout" id="marker-readout">Markers: none</output>
             <output class="interaction-readout" id="lens-shift-readout">Lens Shift X +0.000, Y +0.000</output>
             <output class="interaction-readout" id="pan-readout">Pan X +0.000, Y +0.000</output>
             <p class="hint">Shortcuts: <code>Space</code> A/B, <code>S</code> Split, <code>R</code> Reset</p>
@@ -615,7 +695,7 @@ export class CameraLabApp {
 
         <section class="preview-panel" id="preview-panel">
           <canvas id="preview-canvas"></canvas>
-          <div class="focus-ring is-hidden" id="focus-ring" aria-hidden="true"></div>
+          <div class="marker-layer" id="marker-layer" aria-hidden="true"></div>
           <div class="empty-state" id="empty-state">Drop image here or use "Choose Image"</div>
         </section>
       </div>
@@ -627,6 +707,7 @@ export class CameraLabApp {
     this.createParameterDialControls();
     this.restoreControlTheme();
     this.restoreInteractionMode();
+    this.restoreMarkerTool();
     this.syncControlThemeView();
     this.syncInteractionModeView();
     this.bindFileInput();
@@ -637,6 +718,7 @@ export class CameraLabApp {
     this.bindPreviewControls();
     this.bindControlTheme();
     this.bindInteractionMode();
+    this.bindMarkerControls();
     this.bindMeteringControls();
     this.bindSnapshotControl();
 
@@ -644,6 +726,7 @@ export class CameraLabApp {
     this.rebuildPresetSelect();
     this.restoreAiApiKey();
     this.restoreSessionState();
+    this.pushMarkersToRenderer();
 
     this.unsubscribeParams = this.params.subscribe((state) => {
       this.renderer?.setParams(state);
@@ -716,6 +799,11 @@ export class CameraLabApp {
       autoFocusToggle: this.requireElement<HTMLInputElement>("#auto-focus-toggle"),
       aeAfLockToggle: this.requireElement<HTMLInputElement>("#aeaf-lock-toggle"),
       interactionModeSelect: this.requireElement<HTMLSelectElement>("#interaction-mode-select"),
+      markerKindSelect: this.requireElement<HTMLSelectElement>("#marker-kind-select"),
+      markerAddCenterButton: this.requireElement<HTMLButtonElement>("#marker-add-center"),
+      markerRemoveSelectedButton: this.requireElement<HTMLButtonElement>("#marker-remove-selected"),
+      markerClearButton: this.requireElement<HTMLButtonElement>("#marker-clear"),
+      markerReadout: this.requireElement<HTMLOutputElement>("#marker-readout"),
       lensShiftReadout: this.requireElement<HTMLOutputElement>("#lens-shift-readout"),
       panReadout: this.requireElement<HTMLOutputElement>("#pan-readout"),
       controlThemeSelect: this.requireElement<HTMLSelectElement>("#control-theme-select"),
@@ -726,7 +814,7 @@ export class CameraLabApp {
       fileName: this.requireElement<HTMLElement>("#file-name"),
       status: this.requireElement<HTMLElement>("#status"),
       previewPanel: this.requireElement<HTMLElement>("#preview-panel"),
-      focusRing: this.requireElement<HTMLElement>("#focus-ring"),
+      markerLayer: this.requireElement<HTMLElement>("#marker-layer"),
       emptyState: this.requireElement<HTMLElement>("#empty-state")
     };
   }
@@ -1030,7 +1118,7 @@ export class CameraLabApp {
 
     this.elements.interactionModeSelect.addEventListener("change", () => {
       this.interactionMode = parseInteractionMode(this.elements?.interactionModeSelect.value);
-      this.lensSelectLocked = false;
+      this.markerDragState = null;
       this.panDragState = null;
       writeStorage(INTERACTION_MODE_STORAGE_KEY, this.interactionMode);
       this.syncInteractionModeView();
@@ -1048,6 +1136,51 @@ export class CameraLabApp {
   private restoreInteractionMode(): void {
     const raw = readStorage(INTERACTION_MODE_STORAGE_KEY);
     this.interactionMode = parseInteractionMode(raw);
+  }
+
+  private restoreMarkerTool(): void {
+    const raw = readStorage(MARKER_TOOL_STORAGE_KEY);
+    this.markerTool = parseMarkerKind(raw);
+  }
+
+  private bindMarkerControls(): void {
+    if (!this.elements) {
+      return;
+    }
+
+    this.elements.markerKindSelect.addEventListener("change", () => {
+      this.markerTool = parseMarkerKind(this.elements?.markerKindSelect.value);
+      writeStorage(MARKER_TOOL_STORAGE_KEY, this.markerTool);
+      this.updateFocusOverlay();
+      this.syncMarkerControls();
+      this.setStatus(`Marker tool: ${MARKER_KIND_LABEL[this.markerTool]}`);
+    });
+
+    this.elements.markerAddCenterButton.addEventListener("click", () => {
+      this.addMarkerAtUv(this.markerTool, 0.5, 0.5);
+      this.setStatus(`${MARKER_KIND_LABEL[this.markerTool]} marker added at center.`);
+    });
+
+    this.elements.markerRemoveSelectedButton.addEventListener("click", () => {
+      if (!this.selectedMarkerId || !this.removeMarkerById(this.selectedMarkerId)) {
+        this.setStatus("No marker selected.");
+        return;
+      }
+      this.setStatus("Selected marker removed.");
+    });
+
+    this.elements.markerClearButton.addEventListener("click", () => {
+      if (this.markers.length === 0) {
+        this.setStatus("No markers to clear.");
+        return;
+      }
+      this.markers = [];
+      this.selectedMarkerId = null;
+      this.pushMarkersToRenderer();
+      this.updateFocusOverlay();
+      this.syncMarkerControls();
+      this.setStatus("All markers cleared.");
+    });
   }
 
   private syncControlThemeView(): void {
@@ -1070,6 +1203,24 @@ export class CameraLabApp {
     this.elements.previewPanel.classList.toggle("is-pan-mode", this.interactionMode === "pan");
     this.elements.previewPanel.classList.toggle("is-lens-select-mode", this.interactionMode === "lens-select");
     this.elements.previewPanel.classList.remove("is-panning");
+    this.syncMarkerControls();
+  }
+
+  private syncMarkerControls(): void {
+    if (!this.elements) {
+      return;
+    }
+
+    const markerEnabled = this.interactionMode === "lens-select";
+    this.elements.markerKindSelect.value = this.markerTool;
+    this.elements.markerKindSelect.disabled = !markerEnabled;
+    this.elements.markerAddCenterButton.disabled = !markerEnabled;
+    this.elements.markerRemoveSelectedButton.disabled = !markerEnabled || !this.selectedMarkerId;
+    this.elements.markerClearButton.disabled = !markerEnabled || this.markers.length === 0;
+    const counts = countMarkersByKind(this.markers);
+    const summary = MARKER_KIND_ORDER.map((kind) => `${MARKER_KIND_LABEL[kind]} ${counts[kind]}`).join(" · ");
+    this.elements.markerReadout.textContent =
+      this.markers.length > 0 ? `Markers: ${summary}` : "Markers: none";
   }
 
   private stepDialValue(key: NumericParamKey, delta: -1 | 1): void {
@@ -1190,20 +1341,35 @@ export class CameraLabApp {
 
     if (this.interactionMode === "lens-select") {
       event.preventDefault();
-      if (this.lensSelectLocked) {
-        this.lensSelectLocked = false;
-        this.setStatus("Lens position unlocked.");
-        this.updateFocusOverlay();
-        return;
-      }
-
       const uv = this.mapPointerToActiveUv(event.clientX, event.clientY);
       if (!uv) {
         return;
       }
-      this.applyLensShiftFromUv(uv.x, uv.y);
-      this.lensSelectLocked = true;
-      this.setStatus("Lens position locked.");
+      const hit = this.findMarkerAtUv(uv.x, uv.y);
+      if (hit) {
+        this.selectedMarkerId = hit.id;
+        this.markerDragState = {
+          pointerId: event.pointerId,
+          markerId: hit.id
+        };
+        this.elements.canvas.setPointerCapture(event.pointerId);
+        this.syncMarkerControls();
+        this.updateFocusOverlay();
+        this.setStatus(`Selected marker: ${MARKER_KIND_LABEL[hit.kind]}.`);
+        return;
+      }
+
+      const marker = this.addMarkerAtUv(this.markerTool, uv.x, uv.y);
+      if (!marker) {
+        this.setStatus(`${MARKER_KIND_LABEL[this.markerTool]} markers are full.`);
+        return;
+      }
+      this.markerDragState = {
+        pointerId: event.pointerId,
+        markerId: marker.id
+      };
+      this.elements.canvas.setPointerCapture(event.pointerId);
+      this.setStatus(`Added ${MARKER_KIND_LABEL[marker.kind]} marker.`);
       this.updateFocusOverlay();
       return;
     }
@@ -1231,13 +1397,17 @@ export class CameraLabApp {
       return;
     }
 
-    if (this.interactionMode === "lens-select" && !this.lensSelectLocked) {
+    if (
+      this.interactionMode === "lens-select" &&
+      this.markerDragState &&
+      this.markerDragState.pointerId === event.pointerId
+    ) {
       const uv = this.mapPointerToActiveUv(event.clientX, event.clientY);
       if (!uv) {
         return;
       }
-      this.applyLensShiftFromUv(uv.x, uv.y);
-      this.updateFocusOverlay();
+      event.preventDefault();
+      this.moveMarker(this.markerDragState.markerId, uv.x, uv.y);
       return;
     }
 
@@ -1268,7 +1438,17 @@ export class CameraLabApp {
   }
 
   private handlePreviewPointerUp(event: PointerEvent): void {
-    if (!this.elements || !this.panDragState) {
+    if (!this.elements) {
+      return;
+    }
+
+    if (this.markerDragState && this.markerDragState.pointerId === event.pointerId) {
+      this.markerDragState = null;
+      this.setStatus("Marker position updated.");
+      return;
+    }
+
+    if (!this.panDragState) {
       return;
     }
     if (this.panDragState.pointerId !== event.pointerId) {
@@ -1351,6 +1531,136 @@ export class CameraLabApp {
       lensShiftX: shiftX,
       lensShiftY: shiftY
     });
+  }
+
+  private pushMarkersToRenderer(): void {
+    const rendererMarkers: RendererLensMarker[] = this.markers.map((marker) => ({
+      kind: marker.kind,
+      x: marker.x,
+      y: marker.y,
+      radius: marker.radius,
+      strength: marker.strength
+    }));
+    this.renderer?.setLensMarkers(rendererMarkers);
+    this.persistSessionState(this.params.getState());
+  }
+
+  private findMarkerAtUv(uvX: number, uvY: number): LensMarker | null {
+    let best: LensMarker | null = null;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (const marker of this.markers) {
+      const threshold = Math.max(0.03, marker.radius * 0.72);
+      const distanceToMarker = Math.hypot(marker.x - uvX, marker.y - uvY);
+      if (distanceToMarker > threshold) {
+        continue;
+      }
+      if (distanceToMarker < bestDistance) {
+        best = marker;
+        bestDistance = distanceToMarker;
+      }
+    }
+    return best;
+  }
+
+  private addMarkerAtUv(kind: MarkerKind, uvX: number, uvY: number): LensMarker | null {
+    const countForKind = this.markers.filter((marker) => marker.kind === kind).length;
+    if (countForKind >= MAX_MARKERS_PER_KIND) {
+      return null;
+    }
+    const marker: LensMarker = {
+      id: `m-${this.markerSeed++}`,
+      kind,
+      x: clamp(uvX, 0, 1),
+      y: clamp(uvY, 0, 1),
+      radius: defaultRadiusForMarkerKind(kind),
+      strength: defaultStrengthForMarkerKind(kind)
+    };
+    this.markers = [...this.markers, marker];
+    this.selectedMarkerId = marker.id;
+    this.syncLensShiftFromMarkers();
+    this.pushMarkersToRenderer();
+    this.updateFocusOverlay();
+    this.syncMarkerControls();
+    return marker;
+  }
+
+  private moveMarker(markerId: string, uvX: number, uvY: number): void {
+    let updated = false;
+    this.markers = this.markers.map((marker) => {
+      if (marker.id !== markerId) {
+        return marker;
+      }
+      updated = true;
+      return {
+        ...marker,
+        x: clamp(uvX, 0, 1),
+        y: clamp(uvY, 0, 1)
+      };
+    });
+    if (!updated) {
+      return;
+    }
+    this.selectedMarkerId = markerId;
+    this.syncLensShiftFromMarkers();
+    this.pushMarkersToRenderer();
+    this.updateFocusOverlay();
+    this.syncMarkerControls();
+  }
+
+  private removeMarkerById(markerId: string): boolean {
+    const prevLength = this.markers.length;
+    this.markers = this.markers.filter((marker) => marker.id !== markerId);
+    if (this.markers.length === prevLength) {
+      return false;
+    }
+    this.selectedMarkerId = this.markers.length > 0 ? this.markers[this.markers.length - 1].id : null;
+    this.syncLensShiftFromMarkers();
+    this.pushMarkersToRenderer();
+    this.updateFocusOverlay();
+    this.syncMarkerControls();
+    return true;
+  }
+
+  private syncLensShiftFromMarkers(): void {
+    const focusMarker = this.markers.find((marker) => marker.kind === "focus");
+    if (!focusMarker) {
+      return;
+    }
+    this.applyLensShiftFromUv(focusMarker.x, focusMarker.y);
+  }
+
+  private applyAiMarkerPatch(patch: AiMarkerPatch): void {
+    const incoming = patch.markers.slice(0, MAX_MARKERS_PER_KIND * MARKER_KIND_ORDER.length);
+    if (incoming.length === 0) {
+      return;
+    }
+
+    if (patch.replace) {
+      this.markers = incoming.map((marker) => ({
+        id: `m-${this.markerSeed++}`,
+        ...marker
+      }));
+    } else {
+      const merged = [...this.markers];
+      const counts = countMarkersByKind(merged);
+      for (const marker of incoming) {
+        if (counts[marker.kind] >= MAX_MARKERS_PER_KIND) {
+          continue;
+        }
+        merged.push({
+          id: `m-${this.markerSeed++}`,
+          ...marker
+        });
+        counts[marker.kind] += 1;
+      }
+      this.markers = merged;
+    }
+
+    this.selectedMarkerId = this.markers.length > 0 ? this.markers[this.markers.length - 1].id : null;
+    this.syncLensShiftFromMarkers();
+    this.pushMarkersToRenderer();
+    this.syncMarkerControls();
+    this.updateFocusOverlay();
   }
 
   private isPanAvailable(): boolean {
@@ -1526,6 +1836,7 @@ export class CameraLabApp {
     this.elements.interactionModeSelect.value = this.interactionMode;
     this.elements.lensShiftReadout.textContent = `Lens Shift X ${formatSigned(state.lensShiftX, 3)}, Y ${formatSigned(state.lensShiftY, 3)}`;
     this.elements.panReadout.textContent = `Pan X ${formatSigned(state.viewPanX, 3)}, Y ${formatSigned(state.viewPanY, 3)}`;
+    this.syncMarkerControls();
   }
 
   private async loadIntoRenderer(file: File): Promise<void> {
@@ -2036,45 +2347,59 @@ export class CameraLabApp {
 
     try {
       const subjectContext = this.updateSubjectContextForRenderer(true);
-      const aiResponse = await requestAiCameraPatch(apiKey, prompt, currentState, subjectContext);
+      const aiResponse = await requestAiCameraPatch(apiKey, prompt, currentState, subjectContext, this.markers);
       const candidatePatch = extractAiPatchCandidate(aiResponse.patch);
+      const markerPatch = sanitizeAiMarkerPatch(extractAiMarkerCandidate(aiResponse.patch));
       let patch = sanitizeAiSuggestedPatch(candidatePatch);
       patch = ensureVisibleAiPatch(patch, prompt, currentState);
-
-      if (!patch || Object.keys(patch).length === 0) {
+      const hasMarkerPatch = markerPatch && markerPatch.markers.length > 0;
+      const hasParamPatch = patch && Object.keys(patch).length > 0;
+      if (!hasParamPatch && !hasMarkerPatch) {
         this.setStatus("AI response did not include applicable setting changes.");
         return;
       }
 
-      patch = enforceAiPatchSafety(patch, prompt, currentState, subjectContext);
-
-      if (Object.keys(patch).length === 0) {
-        this.setStatus("AI changes were filtered by safety guards. Try a more explicit prompt.");
-        return;
+      if (patch && Object.keys(patch).length > 0) {
+        patch = enforceAiPatchSafety(patch, prompt, currentState, subjectContext);
       }
 
-      const finalPatch = filterChangedAiPatchFields(patch, currentState);
-      if (!finalPatch || Object.keys(finalPatch).length === 0) {
+      const finalPatch =
+        patch && Object.keys(patch).length > 0 ? filterChangedAiPatchFields(patch, currentState) : null;
+      if ((!finalPatch || Object.keys(finalPatch).length === 0) && !hasMarkerPatch) {
         this.setStatus("AI returned near-identical values. Try a stronger style prompt.");
         return;
       }
 
-      const changedKeys = Object.keys(finalPatch);
+      const changedKeys = finalPatch ? Object.keys(finalPatch) : [];
+      let markerSummary = "";
       const appliedState = this.params.getState();
       if (appliedState.previewMode === "original") {
         this.params.set("previewMode", "processed");
       }
-
-      this.params.patch(finalPatch);
+      if (finalPatch && Object.keys(finalPatch).length > 0) {
+        this.params.patch(finalPatch);
+      }
+      if (markerPatch && markerPatch.markers.length > 0) {
+        this.applyAiMarkerPatch(markerPatch);
+        markerSummary = markerPatch.replace
+          ? `marker replace (${markerPatch.markers.length})`
+          : `markers +${markerPatch.markers.length}`;
+      }
       const summary = aiResponse.summary?.trim();
+      const changeLabel =
+        changedKeys.length > 0 && markerSummary
+          ? `${changedKeys.join(", ")}, ${markerSummary}`
+          : changedKeys.length > 0
+            ? changedKeys.join(", ")
+            : markerSummary;
       if (summary) {
         this.setStatus(
           subjectContext
-            ? `AI applied (${changedKeys.join(", ")}): ${summary} [subject ${Math.round(subjectContext.center.x * 100)}%,${Math.round(subjectContext.center.y * 100)}%]`
-            : `AI applied (${changedKeys.join(", ")}): ${summary}`
+            ? `AI applied (${changeLabel}): ${summary} [subject ${Math.round(subjectContext.center.x * 100)}%,${Math.round(subjectContext.center.y * 100)}%]`
+            : `AI applied (${changeLabel}): ${summary}`
         );
       } else {
-        this.setStatus(`AI applied ${changedKeys.length} setting(s): ${changedKeys.join(", ")}.`);
+        this.setStatus(`AI applied: ${changeLabel}.`);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown AI request error.";
@@ -2142,41 +2467,68 @@ export class CameraLabApp {
       return;
     }
 
-    const { focusRing } = this.elements;
+    const { markerLayer } = this.elements;
     const hasSource = this.sourceMode === "webcam" || this.hasImage;
     const shouldShow = hasSource && this.interactionMode === "lens-select";
-    focusRing.classList.toggle("is-hidden", !shouldShow);
+    markerLayer.classList.toggle("is-hidden", !shouldShow);
     if (!shouldShow) {
+      markerLayer.innerHTML = "";
+      return;
+    }
+
+    const dims = this.getActiveSourceDimensions();
+    if (!dims) {
+      markerLayer.innerHTML = "";
       return;
     }
 
     const params = state ?? this.params.getState();
     const lensCenter = lensCenterFromShiftWeights(params.lensShiftX, params.lensShiftY);
-    const dims = this.getActiveSourceDimensions();
-    let focusX = lensCenter.x;
-    let focusY = lensCenter.y;
-    if (dims) {
+    const apertureNorm = clamp((params.aperture - 1.4) / (22 - 1.4), 0, 1);
+    const defaultRadius = lerp(0.1, 0.18, 1 - apertureNorm);
+
+    const renderMarkers = this.markers.length > 0
+      ? this.markers
+      : [
+          {
+            id: "__fallback-focus__",
+            kind: "focus" as const,
+            x: lensCenter.x,
+            y: lensCenter.y,
+            radius: defaultRadius,
+            strength: 0.9
+          }
+        ];
+
+    const canvasWidth = Math.max(1, this.elements.canvas.clientWidth);
+    const canvasHeight = Math.max(1, this.elements.canvas.clientHeight);
+    const minCanvasSize = Math.max(1, Math.min(canvasWidth, canvasHeight));
+    markerLayer.innerHTML = "";
+
+    for (const marker of renderMarkers) {
       const mapped = mapImageUvToCanvasNormalized(
-        lensCenter.x,
-        lensCenter.y,
-        Math.max(1, this.elements.canvas.clientWidth),
-        Math.max(1, this.elements.canvas.clientHeight),
+        marker.x,
+        marker.y,
+        canvasWidth,
+        canvasHeight,
         dims.width,
         dims.height
       );
-      focusX = mapped.x;
-      focusY = mapped.y;
+      const markerNode = document.createElement("div");
+      markerNode.className = `marker marker--${marker.kind}`;
+      if (marker.id === this.selectedMarkerId) {
+        markerNode.classList.add("is-selected");
+      }
+      const markerRadius = clamp(marker.radius, MARKER_RADIUS_RANGE.min, MARKER_RADIUS_RANGE.max);
+      const markerSize = Math.max(26, Math.round(minCanvasSize * markerRadius * 2));
+      const alpha = (0.28 + clamp(marker.strength, 0, 1) * 0.45).toFixed(3);
+      markerNode.style.left = `${(mapped.x * 100).toFixed(2)}%`;
+      markerNode.style.top = `${(mapped.y * 100).toFixed(2)}%`;
+      markerNode.style.width = `${markerSize}px`;
+      markerNode.style.height = `${markerSize}px`;
+      markerNode.style.setProperty("--marker-alpha", alpha);
+      markerLayer.append(markerNode);
     }
-
-    const apertureNorm = clamp((params.aperture - 1.4) / (22 - 1.4), 0, 1);
-    const ringSize = Math.round(74 + (1 - apertureNorm) * 58);
-    const alpha = (0.28 + (1 - apertureNorm) * 0.24).toFixed(3);
-
-    focusRing.style.left = `${(focusX * 100).toFixed(2)}%`;
-    focusRing.style.top = `${(focusY * 100).toFixed(2)}%`;
-    focusRing.style.width = `${ringSize}px`;
-    focusRing.style.height = `${ringSize}px`;
-    focusRing.style.setProperty("--focus-alpha", alpha);
   }
 
   private restoreSessionState(): void {
@@ -2187,17 +2539,42 @@ export class CameraLabApp {
 
     try {
       const parsed = JSON.parse(raw) as unknown;
-      const patch = toSessionPatch(parsed);
+      const sessionObject =
+        parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+      const paramSource =
+        sessionObject && sessionObject.params && typeof sessionObject.params === "object"
+          ? sessionObject.params
+          : parsed;
+      const patch = toSessionPatch(paramSource);
       if (patch) {
         this.params.patch(patch);
       }
+      if (sessionObject && Array.isArray(sessionObject.markers)) {
+        this.markers = sanitizeLensMarkers(sessionObject.markers);
+        this.selectedMarkerId = this.markers.length > 0 ? this.markers[this.markers.length - 1].id : null;
+        this.markerSeed = computeNextMarkerSeed(this.markers, this.markerSeed);
+        this.syncLensShiftFromMarkers();
+      }
+      if (sessionObject && typeof sessionObject.markerTool === "string") {
+        this.markerTool = parseMarkerKind(sessionObject.markerTool);
+      }
+      this.pushMarkersToRenderer();
+      this.syncMarkerControls();
+      this.updateFocusOverlay();
     } catch {
       // Ignore malformed storage payloads.
     }
   }
 
   private persistSessionState(state: Readonly<CameraParams>): void {
-    writeStorage(SESSION_STORAGE_KEY, JSON.stringify(state));
+    writeStorage(
+      SESSION_STORAGE_KEY,
+      JSON.stringify({
+        params: state,
+        markers: this.markers,
+        markerTool: this.markerTool
+      })
+    );
   }
 
   private loadImageFile(file: File): Promise<HTMLImageElement> {
@@ -2450,6 +2827,107 @@ function extractAiPatchCandidate(value: unknown): unknown {
     "upscaleFactor" in candidate ||
     "upscaleStyle" in candidate;
   return hasKnownField ? candidate : null;
+}
+
+function extractAiMarkerCandidate(value: unknown): unknown {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  const direct = candidate.markers ?? candidate.markerPatch ?? null;
+  if (direct) {
+    return direct;
+  }
+
+  const nested = candidate.patch;
+  if (nested && typeof nested === "object") {
+    const nestedObject = nested as Record<string, unknown>;
+    return nestedObject.markers ?? nestedObject.markerPatch ?? null;
+  }
+
+  return null;
+}
+
+function sanitizeAiMarkerPatch(value: unknown): AiMarkerPatch | null {
+  if (!value) {
+    return null;
+  }
+
+  let replace = false;
+  let rawItems: unknown = null;
+
+  if (Array.isArray(value)) {
+    rawItems = value;
+  } else if (typeof value === "object") {
+    const candidate = value as Record<string, unknown>;
+    replace = parseFlexibleBoolean(candidate.replace) ?? false;
+    if (Array.isArray(candidate.items)) {
+      rawItems = candidate.items;
+    } else if (Array.isArray(candidate.markers)) {
+      rawItems = candidate.markers;
+    }
+  }
+
+  if (!Array.isArray(rawItems)) {
+    return null;
+  }
+
+  const byKind: Record<MarkerKind, number> = {
+    focus: 0,
+    blur: 0,
+    "light-natural": 0,
+    "light-artificial": 0
+  };
+  const markers: MarkerSpec[] = [];
+
+  for (const item of rawItems) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const candidate = item as Record<string, unknown>;
+    const kind = toMarkerKind(candidate.kind);
+    if (!kind) {
+      continue;
+    }
+    if (byKind[kind] >= MAX_MARKERS_PER_KIND) {
+      continue;
+    }
+
+    const x = parseFlexibleNumber(candidate.x, "lensShiftX");
+    const y = parseFlexibleNumber(candidate.y, "lensShiftY");
+    if (x === null || y === null) {
+      continue;
+    }
+
+    const radiusValue = parseFlexibleNumber(candidate.radius, "vignette");
+    const strengthValue = parseFlexibleNumber(candidate.strength, "noiseReduction");
+    markers.push({
+      kind,
+      x: clamp(x, 0, 1),
+      y: clamp(y, 0, 1),
+      radius: clamp(
+        radiusValue ?? defaultRadiusForMarkerKind(kind),
+        MARKER_RADIUS_RANGE.min,
+        MARKER_RADIUS_RANGE.max
+      ),
+      strength: clamp(
+        strengthValue ?? defaultStrengthForMarkerKind(kind),
+        MARKER_STRENGTH_RANGE.min,
+        MARKER_STRENGTH_RANGE.max
+      )
+    });
+    byKind[kind] += 1;
+  }
+
+  if (markers.length === 0) {
+    return null;
+  }
+
+  return {
+    replace,
+    markers
+  };
 }
 
 function ensureVisibleAiPatch(
@@ -3077,6 +3555,16 @@ function sanitizeSubjectContextForPrompt(subject: SubjectContext): SubjectContex
   };
 }
 
+function sanitizeMarkerForPrompt(marker: LensMarker | MarkerSpec): MarkerSpec {
+  return {
+    kind: marker.kind,
+    x: Number(clamp(marker.x, 0, 1).toFixed(3)),
+    y: Number(clamp(marker.y, 0, 1).toFixed(3)),
+    radius: Number(clamp(marker.radius, MARKER_RADIUS_RANGE.min, MARKER_RADIUS_RANGE.max).toFixed(3)),
+    strength: Number(clamp(marker.strength, MARKER_STRENGTH_RANGE.min, MARKER_STRENGTH_RANGE.max).toFixed(3))
+  };
+}
+
 function toRendererSubjectContext(subject: SubjectContext): RendererSubjectContext {
   const quality = clamp(subject.sharpness * 0.55 + subject.areaRatio * 0.45, 0, 1);
   const strength = clamp(0.34 + quality * 0.66, 0.34, 1);
@@ -3099,7 +3587,8 @@ async function requestAiCameraPatch(
   apiKey: string,
   prompt: string,
   state: Readonly<CameraParams>,
-  subjectContext: SubjectContext | null
+  subjectContext: SubjectContext | null,
+  markers: readonly LensMarker[]
 ): Promise<{ patch: unknown; summary: string }> {
   const requestBody = {
     model: OPENAI_MODEL,
@@ -3114,10 +3603,11 @@ async function requestAiCameraPatch(
           "You are a camera look tuning assistant.",
           "Given the user's prompt and current camera state, produce clearly visible adjustments.",
           "Return valid JSON only with shape:",
-          '{"patch":{"exposureEV":number,"shutter":number,"iso":number,"aperture":number,"focalLength":number,"focusDistance":number,"lensShiftX":number,"lensShiftY":number,"distortion":number,"vignette":number,"chromaAberration":number,"temperature":number,"tint":number,"contrast":number,"saturation":number,"sharpen":number,"noiseReduction":number,"toneMap":boolean,"upscaleFactor":number,"upscaleStyle":"balanced"|"enhanced"},"summary":"short text"}',
+          '{"patch":{"exposureEV":number,"shutter":number,"iso":number,"aperture":number,"focalLength":number,"focusDistance":number,"lensShiftX":number,"lensShiftY":number,"distortion":number,"vignette":number,"chromaAberration":number,"temperature":number,"tint":number,"contrast":number,"saturation":number,"sharpen":number,"noiseReduction":number,"toneMap":boolean,"upscaleFactor":number,"upscaleStyle":"balanced"|"enhanced"},"markers":{"replace":boolean,"items":[{"kind":"focus"|"blur"|"light-natural"|"light-artificial","x":number,"y":number,"radius":number,"strength":number}]},"summary":"short text"}',
           "Change at least 3 fields unless user asks for minimal change.",
           "Respect ranges:",
           "exposureEV[-3..3], shutter[0.000125..0.066667], iso[100..6400], aperture[1.4..22], focalLength[18..120], focusDistance[0.2..50], lensShiftX[-1..1], lensShiftY[-1..1], distortion[-0.5..0.5], vignette[0..1], chromaAberration[0..1], temperature[-1..1], tint[-1..1], contrast[0.5..1.5], saturation[0..2], sharpen[0..1], noiseReduction[0..1], upscaleFactor in [1,1.5,2,2.5,3,3.5,4], upscaleStyle in [balanced,enhanced].",
+          "Marker ranges: x[0..1], y[0..1], radius[0.07..0.38], strength[0.2..1.0], up to 6 items per kind.",
           "Use subjectContext to protect subject exposure and apparent focus.",
           "If subjectContext.brightness is high, avoid brightening aggressively.",
           "If subjectContext.backlit is true, prefer modest EV increase and tone mapping over extreme contrast jumps.",
@@ -3154,8 +3644,10 @@ async function requestAiCameraPatch(
             toneMap: state.toneMap,
             upscaleFactor: state.upscaleFactor,
             upscaleStyle: state.upscaleStyle,
+            markers: markers.map(sanitizeMarkerForPrompt),
             subjectContext: subjectContext ? sanitizeSubjectContextForPrompt(subjectContext) : null
           },
+          markers: markers.map(sanitizeMarkerForPrompt),
           subjectContext: subjectContext ? sanitizeSubjectContextForPrompt(subjectContext) : null
         })
       }
@@ -3264,12 +3756,17 @@ function parseInteractionMode(raw: string | null | undefined): InteractionMode {
   return "aeaf";
 }
 
+function parseMarkerKind(raw: string | null | undefined): MarkerKind {
+  const kind = toMarkerKind(raw);
+  return kind ?? "focus";
+}
+
 function interactionModeHelpMessage(mode: InteractionMode): string {
   if (mode === "aeaf") {
     return "AE/AF mode: tap preview to meter exposure and focus.";
   }
   if (mode === "lens-select") {
-    return "Subject Select mode: move mouse to place lens, click to lock/unlock.";
+    return "Subject Select mode: click to add/select markers, drag to reposition.";
   }
   return "Screen Pan mode: drag to move when zoomed in.";
 }
@@ -3436,6 +3933,113 @@ function lensCenterFromShiftWeights(shiftX: number, shiftY: number): { x: number
     x: clamp(0.5 + offsetX, 0.02, 0.98),
     y: clamp(0.5 + offsetY, 0.02, 0.98)
   };
+}
+
+function toMarkerKind(value: unknown): MarkerKind | null {
+  if (value === "focus" || value === "blur" || value === "light-natural" || value === "light-artificial") {
+    return value;
+  }
+  return null;
+}
+
+function defaultRadiusForMarkerKind(kind: MarkerKind): number {
+  if (kind === "focus") {
+    return 0.14;
+  }
+  if (kind === "blur") {
+    return 0.2;
+  }
+  if (kind === "light-natural") {
+    return 0.22;
+  }
+  return 0.18;
+}
+
+function defaultStrengthForMarkerKind(kind: MarkerKind): number {
+  if (kind === "focus") {
+    return 0.88;
+  }
+  if (kind === "blur") {
+    return 0.78;
+  }
+  if (kind === "light-natural") {
+    return 0.74;
+  }
+  return 0.68;
+}
+
+function countMarkersByKind(markers: ReadonlyArray<{ kind: MarkerKind }>): Record<MarkerKind, number> {
+  const counts: Record<MarkerKind, number> = {
+    focus: 0,
+    blur: 0,
+    "light-natural": 0,
+    "light-artificial": 0
+  };
+  for (const marker of markers) {
+    counts[marker.kind] += 1;
+  }
+  return counts;
+}
+
+function sanitizeLensMarkers(value: unknown): LensMarker[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const sanitized: LensMarker[] = [];
+  const counts = countMarkersByKind([]);
+  for (let i = 0; i < value.length; i += 1) {
+    const item = value[i];
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const candidate = item as Record<string, unknown>;
+    const kind = toMarkerKind(candidate.kind);
+    if (!kind) {
+      continue;
+    }
+    if (counts[kind] >= MAX_MARKERS_PER_KIND) {
+      continue;
+    }
+    const x = typeof candidate.x === "number" ? candidate.x : Number.NaN;
+    const y = typeof candidate.y === "number" ? candidate.y : Number.NaN;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      continue;
+    }
+    const radius = typeof candidate.radius === "number" ? candidate.radius : defaultRadiusForMarkerKind(kind);
+    const strength =
+      typeof candidate.strength === "number" ? candidate.strength : defaultStrengthForMarkerKind(kind);
+    const id = typeof candidate.id === "string" && candidate.id ? candidate.id : `m-restored-${i + 1}`;
+    sanitized.push({
+      id,
+      kind,
+      x: clamp(x, 0, 1),
+      y: clamp(y, 0, 1),
+      radius: clamp(radius, MARKER_RADIUS_RANGE.min, MARKER_RADIUS_RANGE.max),
+      strength: clamp(strength, MARKER_STRENGTH_RANGE.min, MARKER_STRENGTH_RANGE.max)
+    });
+    counts[kind] += 1;
+  }
+  return sanitized;
+}
+
+function computeNextMarkerSeed(markers: readonly LensMarker[], fallback: number): number {
+  let maxSeen = fallback;
+  for (const marker of markers) {
+    const match = marker.id.match(/(\d+)$/);
+    if (!match) {
+      continue;
+    }
+    const numeric = Number(match[1]);
+    if (Number.isFinite(numeric)) {
+      maxSeen = Math.max(maxSeen, numeric + 1);
+    }
+  }
+  return maxSeen;
+}
+
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
 }
 
 function readStorage(key: string): string | null {
