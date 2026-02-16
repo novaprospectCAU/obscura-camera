@@ -141,6 +141,7 @@ uniform float uShutter;
 uniform float uIso;
 uniform float uAperture;
 uniform float uFocusDistance;
+uniform vec2 uLensShift;
 uniform float uTemperature;
 uniform float uTint;
 uniform float uContrast;
@@ -211,8 +212,9 @@ void main() {
   float apertureNorm = clamp((uAperture - 1.4) / (22.0 - 1.4), 0.0, 1.0);
   float apertureWide = 1.0 - apertureNorm;
   float focusNorm = clamp((uFocusDistance - 0.2) / (50.0 - 0.2), 0.0, 1.0);
+  vec2 lensCenter = clamp(vec2(0.5) + uLensShift, vec2(0.1), vec2(0.9));
   float subjectStrength = clamp(uSubjectStrength, 0.0, 1.0);
-  vec2 subjectCenter = mix(vec2(0.5), clamp(uSubjectCenter, 0.0, 1.0), subjectStrength);
+  vec2 subjectCenter = mix(lensCenter, clamp(uSubjectCenter, 0.0, 1.0), subjectStrength);
   vec2 subjectBoxMin = clamp(uSubjectBox.xy, vec2(0.0), vec2(0.98));
   vec2 subjectBoxSize = clamp(uSubjectBox.zw, vec2(0.02), vec2(1.0));
   vec4 safeSubjectBox = vec4(
@@ -368,6 +370,7 @@ export class WebGLImageRenderer {
   private readonly effectsIsoUniform: WebGLUniformLocation;
   private readonly effectsApertureUniform: WebGLUniformLocation;
   private readonly effectsFocusDistanceUniform: WebGLUniformLocation;
+  private readonly effectsLensShiftUniform: WebGLUniformLocation;
   private readonly effectsTemperatureUniform: WebGLUniformLocation;
   private readonly effectsTintUniform: WebGLUniformLocation;
   private readonly effectsContrastUniform: WebGLUniformLocation;
@@ -457,6 +460,7 @@ export class WebGLImageRenderer {
     this.effectsIsoUniform = this.requireUniform(this.effectsProgram, "uIso");
     this.effectsApertureUniform = this.requireUniform(this.effectsProgram, "uAperture");
     this.effectsFocusDistanceUniform = this.requireUniform(this.effectsProgram, "uFocusDistance");
+    this.effectsLensShiftUniform = this.requireUniform(this.effectsProgram, "uLensShift");
     this.effectsTemperatureUniform = this.requireUniform(this.effectsProgram, "uTemperature");
     this.effectsTintUniform = this.requireUniform(this.effectsProgram, "uTint");
     this.effectsContrastUniform = this.requireUniform(this.effectsProgram, "uContrast");
@@ -757,6 +761,7 @@ export class WebGLImageRenderer {
     this.gl.uniform1f(this.effectsIsoUniform, this.params.iso);
     this.gl.uniform1f(this.effectsApertureUniform, this.params.aperture);
     this.gl.uniform1f(this.effectsFocusDistanceUniform, this.params.focusDistance);
+    this.gl.uniform2f(this.effectsLensShiftUniform, this.params.lensShiftX, this.params.lensShiftY);
     this.gl.uniform1f(this.effectsTemperatureUniform, this.params.temperature);
     this.gl.uniform1f(this.effectsTintUniform, this.params.tint);
     this.gl.uniform1f(this.effectsContrastUniform, this.params.contrast);

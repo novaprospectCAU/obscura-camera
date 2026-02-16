@@ -29,6 +29,7 @@ This folder contains the initial web MVP with:
 - AI prompt control: enter OpenAI API key + natural-language look prompt to auto-adjust camera settings
 - Subject-aware AI prompt context (center/bbox/brightness/sharpness/backlit) to stabilize exposure/focus suggestions
 - Subject-aware rendering anchor: focus/depth and vignette weighting adapt to detected subject position instead of fixed screen center
+- Transparent on-canvas focus ring overlay indicating current focus anchor
 
 Not included yet:
 

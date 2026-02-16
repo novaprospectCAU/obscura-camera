@@ -141,6 +141,7 @@ type AppElements = {
   fileName: HTMLElement;
   status: HTMLElement;
   previewPanel: HTMLElement;
+  focusRing: HTMLElement;
   emptyState: HTMLElement;
 };
 
@@ -605,6 +606,7 @@ export class CameraLabApp {
 
         <section class="preview-panel" id="preview-panel">
           <canvas id="preview-canvas"></canvas>
+          <div class="focus-ring is-hidden" id="focus-ring" aria-hidden="true"></div>
           <div class="empty-state" id="empty-state">Drop image here or use "Choose Image"</div>
         </section>
       </div>
@@ -635,6 +637,7 @@ export class CameraLabApp {
       this.renderer?.setParams(state);
       this.syncParameterControls(state);
       this.syncPreviewControls(state);
+      this.updateFocusOverlay(state);
       this.persistSessionState(state);
 
       if (this.sourceMode !== "webcam" || !this.webcamVideo) {
@@ -653,6 +656,7 @@ export class CameraLabApp {
     this.refreshEmptyState();
     this.renderer.render();
     this.drawHistogram();
+    this.updateFocusOverlay();
   }
 
   destroy(): void {
@@ -707,6 +711,7 @@ export class CameraLabApp {
       fileName: this.requireElement<HTMLElement>("#file-name"),
       status: this.requireElement<HTMLElement>("#status"),
       previewPanel: this.requireElement<HTMLElement>("#preview-panel"),
+      focusRing: this.requireElement<HTMLElement>("#focus-ring"),
       emptyState: this.requireElement<HTMLElement>("#empty-state")
     };
   }
@@ -1346,6 +1351,7 @@ export class CameraLabApp {
       this.elements.fileName.textContent = file.name;
       this.setStatus(`Loaded ${file.name}`);
       this.refreshEmptyState();
+      this.updateFocusOverlay();
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown loading error.";
       this.setStatus(`Failed to load image: ${message}`);
@@ -1366,6 +1372,7 @@ export class CameraLabApp {
       this.refreshEmptyState();
       this.renderer.render();
       this.drawHistogram();
+      this.updateFocusOverlay();
       this.setStatus(this.hasImage ? "Showing uploaded image." : "Waiting for image input.");
       return;
     }
@@ -1376,6 +1383,7 @@ export class CameraLabApp {
     this.renderer.setSubjectContext(null);
     this.updateSourceButtons();
     this.refreshEmptyState();
+    this.updateFocusOverlay();
     this.setStatus("Requesting webcam permission...");
 
     try {
@@ -1387,6 +1395,7 @@ export class CameraLabApp {
 
       this.setStatus("Webcam active.");
       this.refreshEmptyState();
+      this.updateFocusOverlay();
       this.startWebcamRenderLoop();
     } catch (error) {
       if (switchToken !== this.sourceSwitchToken || this.sourceMode !== "webcam") {
@@ -1397,6 +1406,7 @@ export class CameraLabApp {
       this.sourceMode = "image";
       this.updateSourceButtons();
       this.refreshEmptyState();
+      this.updateFocusOverlay();
 
       const message = error instanceof Error ? error.message : "Failed to start webcam.";
       this.setStatus(`Webcam unavailable: ${message}`);
@@ -1500,6 +1510,7 @@ export class CameraLabApp {
     }
 
     this.lastSubjectAnalysisMs = -Infinity;
+    this.updateFocusOverlay();
   }
 
   private updateSourceButtons(): void {
@@ -1901,6 +1912,7 @@ export class CameraLabApp {
       if (this.latestSubjectContext) {
         this.renderer.setSubjectContext(toRendererSubjectContext(this.latestSubjectContext));
       }
+      this.updateFocusOverlay();
       return this.latestSubjectContext;
     }
 
@@ -1908,7 +1920,43 @@ export class CameraLabApp {
     const nextContext = this.analyzeSubjectContext();
     this.latestSubjectContext = nextContext;
     this.renderer.setSubjectContext(nextContext ? toRendererSubjectContext(nextContext) : null);
+    this.updateFocusOverlay();
     return nextContext;
+  }
+
+  private updateFocusOverlay(state?: Readonly<CameraParams>): void {
+    if (!this.elements) {
+      return;
+    }
+
+    const { focusRing } = this.elements;
+    const hasSource = this.sourceMode === "webcam" || this.hasImage;
+    focusRing.classList.toggle("is-hidden", !hasSource);
+    if (!hasSource) {
+      return;
+    }
+
+    const params = state ?? this.params.getState();
+    const lensCenterX = clamp(0.5 + params.lensShiftX, 0.1, 0.9);
+    const lensCenterY = clamp(0.5 + params.lensShiftY, 0.1, 0.9);
+
+    let focusX = lensCenterX;
+    let focusY = lensCenterY;
+    if (this.latestSubjectContext) {
+      const rendererSubject = toRendererSubjectContext(this.latestSubjectContext);
+      focusX = lerp(lensCenterX, rendererSubject.center.x, rendererSubject.strength);
+      focusY = lerp(lensCenterY, rendererSubject.center.y, rendererSubject.strength);
+    }
+
+    const apertureNorm = clamp((params.aperture - 1.4) / (22 - 1.4), 0, 1);
+    const ringSize = Math.round(74 + (1 - apertureNorm) * 58);
+    const alpha = (0.28 + (1 - apertureNorm) * 0.24).toFixed(3);
+
+    focusRing.style.left = `${(focusX * 100).toFixed(2)}%`;
+    focusRing.style.top = `${(focusY * 100).toFixed(2)}%`;
+    focusRing.style.width = `${ringSize}px`;
+    focusRing.style.height = `${ringSize}px`;
+    focusRing.style.setProperty("--focus-alpha", alpha);
   }
 
   private restoreSessionState(): void {
@@ -3097,6 +3145,10 @@ function waitForNextFrame(): Promise<void> {
   return new Promise((resolve) => {
     requestAnimationFrame(() => resolve());
   });
+}
+
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
 }
 
 function readStorage(key: string): string | null {
