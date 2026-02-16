@@ -21,6 +21,7 @@ This folder contains the initial web MVP with:
 - Session state restore on reload (localStorage)
 - Camera color controls: white balance (temp/tint), contrast, saturation
 - Upscaling controls: 1x / 1.5x / 2x / 2.5x / 3x / 3.5x / 4x internal processing + scaled PNG export
+- Upscale style modes: `Balanced` (look-matched) vs `Enhanced` (strong X1~X4 visual difference)
 - Tap-to-meter Auto Exposure / Auto Focus with AE/AF lock toggle
 - Sharpen and ISO-aware Noise Reduction controls
 - Performance modes: Quality / Balanced / Fast (preview resolution scaling, high-quality snapshot export)

@@ -1,6 +1,7 @@
 export type PreviewMode = "original" | "processed" | "split";
 export type HistogramMode = "original" | "processed" | "composite";
 export type UpscaleFactor = 1 | 1.5 | 2 | 2.5 | 3 | 3.5 | 4;
+export type UpscaleStyle = "balanced" | "enhanced";
 
 export type CameraParams = {
   exposureEV: number;
@@ -20,6 +21,7 @@ export type CameraParams = {
   noiseReduction: number;
   toneMap: boolean;
   upscaleFactor: UpscaleFactor;
+  upscaleStyle: UpscaleStyle;
   previewScale: number;
   previewMode: PreviewMode;
   splitPosition: number;
@@ -44,6 +46,7 @@ export const DEFAULT_CAMERA_PARAMS: CameraParams = {
   noiseReduction: 0.15,
   toneMap: false,
   upscaleFactor: 1,
+  upscaleStyle: "balanced",
   previewScale: 1,
   previewMode: "processed",
   splitPosition: 0.5,

@@ -114,6 +114,7 @@ in vec2 vUv;
 uniform sampler2D uInput;
 uniform vec2 uResolution;
 uniform vec2 uEffectScale;
+uniform float uUpscaleStyle;
 uniform float uShutter;
 uniform float uIso;
 uniform float uAperture;
@@ -179,9 +180,11 @@ void main() {
   float coc = abs(sceneDepth - focusPlane);
   float focusBlurStrength = mix(1.2, 9.0, apertureWide);
   float blurPixels = shutterNorm * 5.0 + coc * focusBlurStrength;
+  float upscaleMag = max(1.0, max(uEffectScale.x, uEffectScale.y));
+  float styleBoost = mix(1.0, pow(upscaleMag, 0.75), uUpscaleStyle);
 
-  vec2 blurStepX = vec2((blurPixels * uEffectScale.x) / uResolution.x, 0.0);
-  vec2 blurStepY = vec2(0.0, (blurPixels * uEffectScale.y) / uResolution.y);
+  vec2 blurStepX = vec2((blurPixels * uEffectScale.x * styleBoost) / uResolution.x, 0.0);
+  vec2 blurStepY = vec2(0.0, (blurPixels * uEffectScale.y * styleBoost) / uResolution.y);
 
   vec3 color = sampleInput(vUv) * 0.24;
   color += sampleInput(vUv - blurStepX * 2.0) * 0.10;
@@ -193,17 +196,23 @@ void main() {
 
   float isoNorm = clamp((uIso - 100.0) / (6400.0 - 100.0), 0.0, 1.0);
   float grain = hash12(gl_FragCoord.xy + vec2(uFrame * 0.173, uFrame * 0.319)) - 0.5;
-  float grainScale = sqrt(max(1.0, max(uEffectScale.x, uEffectScale.y)));
+  float grainScale = mix(1.0, sqrt(upscaleMag), uUpscaleStyle);
   color += grain * (isoNorm * 0.12) * (0.35 + color) * grainScale;
 
-  vec2 pixelStep = vec2(uEffectScale.x / uResolution.x, uEffectScale.y / uResolution.y);
+  vec2 pixelStep = vec2(
+    (uEffectScale.x * styleBoost) / uResolution.x,
+    (uEffectScale.y * styleBoost) / uResolution.y
+  );
   vec3 denoised = crossBlur(vUv, pixelStep * (0.8 + isoNorm));
   float nrAmount = clamp(uNoiseReduction * (0.35 + isoNorm * 0.85), 0.0, 0.95);
+  nrAmount = mix(nrAmount, nrAmount / styleBoost, uUpscaleStyle);
   color = mix(color, denoised, nrAmount);
 
   vec3 localAverage = crossBlur(vUv, pixelStep * 0.85);
   vec3 detail = color - localAverage;
-  color += detail * (uSharpen * 1.35);
+  float detailGain = uSharpen * 1.35;
+  detailGain = mix(detailGain, detailGain + (styleBoost - 1.0) * 0.45, uUpscaleStyle);
+  color += detail * detailGain;
   color = applyWhiteBalance(color);
 
   if (uToneMapEnabled > 0.5) {
@@ -301,6 +310,7 @@ export class WebGLImageRenderer {
   private readonly effectsInputUniform: WebGLUniformLocation;
   private readonly effectsResolutionUniform: WebGLUniformLocation;
   private readonly effectsScaleUniform: WebGLUniformLocation;
+  private readonly effectsUpscaleStyleUniform: WebGLUniformLocation;
   private readonly effectsShutterUniform: WebGLUniformLocation;
   private readonly effectsIsoUniform: WebGLUniformLocation;
   private readonly effectsApertureUniform: WebGLUniformLocation;
@@ -382,6 +392,7 @@ export class WebGLImageRenderer {
     this.effectsInputUniform = this.requireUniform(this.effectsProgram, "uInput");
     this.effectsResolutionUniform = this.requireUniform(this.effectsProgram, "uResolution");
     this.effectsScaleUniform = this.requireUniform(this.effectsProgram, "uEffectScale");
+    this.effectsUpscaleStyleUniform = this.requireUniform(this.effectsProgram, "uUpscaleStyle");
     this.effectsShutterUniform = this.requireUniform(this.effectsProgram, "uShutter");
     this.effectsIsoUniform = this.requireUniform(this.effectsProgram, "uIso");
     this.effectsApertureUniform = this.requireUniform(this.effectsProgram, "uAperture");
@@ -641,6 +652,10 @@ export class WebGLImageRenderer {
       this.effectsScaleUniform,
       this.processWidth / this.sourceWidth,
       this.processHeight / this.sourceHeight
+    );
+    this.gl.uniform1f(
+      this.effectsUpscaleStyleUniform,
+      this.params.upscaleStyle === "enhanced" ? 1 : 0
     );
     this.gl.uniform1f(this.effectsShutterUniform, this.params.shutter);
     this.gl.uniform1f(this.effectsIsoUniform, this.params.iso);

@@ -5,7 +5,8 @@ import {
   type CameraParams,
   type CameraPresetName,
   type HistogramMode,
-  type UpscaleFactor
+  type UpscaleFactor,
+  type UpscaleStyle
 } from "./state";
 import { type HistogramData, WebGLImageRenderer } from "./gl/WebGLImageRenderer";
 
@@ -97,6 +98,7 @@ type AppElements = {
   splitReadout: HTMLOutputElement;
   toneMapToggle: HTMLInputElement;
   upscaleSelect: HTMLSelectElement;
+  upscaleStyleSelect: HTMLSelectElement;
   performanceSelect: HTMLSelectElement;
   autoExposureToggle: HTMLInputElement;
   autoFocusToggle: HTMLInputElement;
@@ -450,6 +452,14 @@ export class CameraLabApp {
                 <option value="4">4x</option>
               </select>
             </label>
+            <label class="upscale-row" for="upscale-style-select">
+              <span>Upscale Style</span>
+              <select id="upscale-style-select">
+                <option value="balanced">Balanced (match look)</option>
+                <option value="enhanced">Enhanced (strong difference)</option>
+              </select>
+            </label>
+            <p class="hint">Balanced keeps X1~X4 look stable, Enhanced increases texture/grain response.</p>
             <label class="upscale-row" for="performance-select">
               <span>Performance</span>
               <select id="performance-select">
@@ -589,6 +599,7 @@ export class CameraLabApp {
       splitReadout: this.requireElement<HTMLOutputElement>("#split-readout"),
       toneMapToggle: this.requireElement<HTMLInputElement>("#tone-map-toggle"),
       upscaleSelect: this.requireElement<HTMLSelectElement>("#upscale-select"),
+      upscaleStyleSelect: this.requireElement<HTMLSelectElement>("#upscale-style-select"),
       performanceSelect: this.requireElement<HTMLSelectElement>("#performance-select"),
       autoExposureToggle: this.requireElement<HTMLInputElement>("#auto-exposure-toggle"),
       autoFocusToggle: this.requireElement<HTMLInputElement>("#auto-focus-toggle"),
@@ -815,6 +826,7 @@ export class CameraLabApp {
       splitSlider,
       toneMapToggle,
       upscaleSelect,
+      upscaleStyleSelect,
       performanceSelect,
       histogramModeSelect
     } = this.elements;
@@ -842,6 +854,15 @@ export class CameraLabApp {
         const y = effective.y.toFixed(2);
         this.setStatus(`Upscale applied (effective ${x}x / ${y}x).`);
       }
+    });
+    upscaleStyleSelect.addEventListener("change", () => {
+      const style = parseUpscaleStyle(upscaleStyleSelect.value);
+      this.params.set("upscaleStyle", style);
+      this.setStatus(
+        style === "enhanced"
+          ? "Upscale style: Enhanced (stronger texture/grain response)."
+          : "Upscale style: Balanced (look-matched across scales)."
+      );
     });
     performanceSelect.addEventListener("change", () => {
       this.params.set("previewScale", parsePreviewScale(performanceSelect.value));
@@ -1173,6 +1194,7 @@ export class CameraLabApp {
     this.elements.splitControl.classList.toggle("is-hidden", state.previewMode !== "split");
     this.elements.toneMapToggle.checked = state.toneMap;
     this.elements.upscaleSelect.value = `${state.upscaleFactor}`;
+    this.elements.upscaleStyleSelect.value = state.upscaleStyle;
     this.elements.performanceSelect.value = `${state.previewScale}`;
     this.elements.histogramModeSelect.value = state.histogramMode;
   }
@@ -1789,6 +1811,9 @@ function toSessionPatch(value: unknown): Partial<CameraParams> | null {
   }
   if (typeof candidate.toneMap === "boolean") patch.toneMap = candidate.toneMap;
   if (isFiniteNumber(candidate.upscaleFactor)) patch.upscaleFactor = coerceUpscaleFactor(candidate.upscaleFactor);
+  if (typeof candidate.upscaleStyle === "string") {
+    patch.upscaleStyle = parseUpscaleStyle(candidate.upscaleStyle);
+  }
   if (isFiniteNumber(candidate.previewScale)) patch.previewScale = parsePreviewScale(`${candidate.previewScale}`);
   if (
     candidate.previewMode === "original" ||
@@ -1852,6 +1877,10 @@ function parsePreviewScale(raw: string): number {
     return 0.75;
   }
   return 1;
+}
+
+function parseUpscaleStyle(raw: string | null | undefined): UpscaleStyle {
+  return raw === "enhanced" ? "enhanced" : "balanced";
 }
 
 function parseControlTheme(raw: string | null | undefined): ControlTheme {
