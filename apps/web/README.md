@@ -1,4 +1,4 @@
-# CameraLab Web MVP (`T0-T4`)
+# CameraLab Web MVP (`T0-T5`)
 
 This folder contains the initial web MVP with:
 
@@ -12,10 +12,10 @@ This folder contains the initial web MVP with:
 - Camera sliders + numeric readouts
 - Presets (Portrait / Landscape / Night)
 - Preview modes: A / B / Split + split slider
+- Multi-pass WebGL pipeline (`input -> lens -> effects -> composite`)
 
 Not included yet:
 
-- Multi-pass rendering
 - Histogram panel
 
 ## Run
