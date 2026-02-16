@@ -38,6 +38,13 @@ export class PingPongFramebuffer {
     return this.targetB;
   }
 
+  dispose(): void {
+    this.gl.deleteFramebuffer(this.targetA.framebuffer);
+    this.gl.deleteTexture(this.targetA.texture);
+    this.gl.deleteFramebuffer(this.targetB.framebuffer);
+    this.gl.deleteTexture(this.targetB.texture);
+  }
+
   private createTarget(): FramebufferTarget {
     const texture = this.gl.createTexture();
     const framebuffer = this.gl.createFramebuffer();
@@ -85,4 +92,3 @@ export class PingPongFramebuffer {
     this.gl.bindTexture(this.gl.TEXTURE_2D, null);
   }
 }
-

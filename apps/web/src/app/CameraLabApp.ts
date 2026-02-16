@@ -188,6 +188,7 @@ export class CameraLabApp {
   private webcamVideo?: HTMLVideoElement;
   private webcamFrameHandle?: number;
   private sourceSwitchToken = 0;
+  private unsubscribeParams?: () => void;
 
   private readonly onResize = () => {
     this.renderer?.resize();
@@ -319,7 +320,7 @@ export class CameraLabApp {
     this.bindPresetControls();
     this.bindPreviewControls();
 
-    this.params.subscribe((state) => {
+    this.unsubscribeParams = this.params.subscribe((state) => {
       this.renderer?.setParams(state);
       this.syncParameterControls(state);
       this.syncPreviewControls(state);
@@ -340,6 +341,22 @@ export class CameraLabApp {
     this.refreshEmptyState();
     this.renderer.render();
     this.drawHistogram();
+  }
+
+  destroy(): void {
+    window.removeEventListener("resize", this.onResize);
+    window.removeEventListener("dragover", this.blockWindowDrop);
+    window.removeEventListener("drop", this.blockWindowDrop);
+    window.removeEventListener("pagehide", this.onPageHide);
+    window.removeEventListener("keydown", this.onKeyDown);
+
+    this.disableWebcam();
+    this.unsubscribeParams?.();
+    this.unsubscribeParams = undefined;
+
+    this.renderer?.dispose();
+    this.renderer = undefined;
+    this.elements = undefined;
   }
 
   private collectElements(): AppElements {

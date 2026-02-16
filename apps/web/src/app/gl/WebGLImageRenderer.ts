@@ -231,6 +231,9 @@ export class WebGLImageRenderer {
   private readonly canvas: HTMLCanvasElement;
   private readonly gl: WebGL2RenderingContext;
   private readonly vao: WebGLVertexArrayObject;
+  private readonly positionBuffer: WebGLBuffer;
+  private readonly uvBuffer: WebGLBuffer;
+  private readonly indexBuffer: WebGLBuffer;
   private readonly sourceTexture: WebGLTexture;
   private readonly pingPong: PingPongFramebuffer;
 
@@ -291,7 +294,11 @@ export class WebGLImageRenderer {
     }
     this.gl = gl;
 
-    this.vao = this.createFullscreenQuad();
+    const quad = this.createFullscreenQuad();
+    this.vao = quad.vao;
+    this.positionBuffer = quad.positionBuffer;
+    this.uvBuffer = quad.uvBuffer;
+    this.indexBuffer = quad.indexBuffer;
     this.sourceTexture = this.createTexture();
     this.pingPong = new PingPongFramebuffer(gl);
 
@@ -343,6 +350,22 @@ export class WebGLImageRenderer {
 
   getHistogram(): HistogramData {
     return this.histogram;
+  }
+
+  dispose(): void {
+    this.pingPong.dispose();
+    this.gl.deleteTexture(this.sourceTexture);
+    this.gl.deleteTexture(this.histogramTexture);
+    this.gl.deleteFramebuffer(this.histogramFramebuffer);
+    this.gl.deleteBuffer(this.positionBuffer);
+    this.gl.deleteBuffer(this.uvBuffer);
+    this.gl.deleteBuffer(this.indexBuffer);
+    this.gl.deleteVertexArray(this.vao);
+
+    this.gl.deleteProgram(this.inputProgram);
+    this.gl.deleteProgram(this.lensProgram);
+    this.gl.deleteProgram(this.effectsProgram);
+    this.gl.deleteProgram(this.compositeProgram);
   }
 
   resize(): void {
@@ -714,7 +737,12 @@ export class WebGLImageRenderer {
     return shader;
   }
 
-  private createFullscreenQuad(): WebGLVertexArrayObject {
+  private createFullscreenQuad(): {
+    vao: WebGLVertexArrayObject;
+    positionBuffer: WebGLBuffer;
+    uvBuffer: WebGLBuffer;
+    indexBuffer: WebGLBuffer;
+  } {
     const vao = this.gl.createVertexArray();
     if (!vao) {
       throw new Error("Failed to create vertex array object.");
@@ -750,7 +778,12 @@ export class WebGLImageRenderer {
     this.gl.bindVertexArray(null);
     this.gl.bindBuffer(this.gl.ARRAY_BUFFER, null);
 
-    return vao;
+    return {
+      vao,
+      positionBuffer,
+      uvBuffer,
+      indexBuffer
+    };
   }
 
   private createTexture(): WebGLTexture {
