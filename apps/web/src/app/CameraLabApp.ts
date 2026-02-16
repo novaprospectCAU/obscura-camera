@@ -1775,14 +1775,10 @@ export class CameraLabApp {
         return;
       }
 
-      if (!shouldAllowLensAdjustments(prompt)) {
-        delete patch.focalLength;
-        delete patch.focusDistance;
-      }
-      patch = enforceAiUpscaleSafety(patch, prompt, currentState);
+      patch = enforceAiPatchSafety(patch, prompt, currentState);
 
       if (Object.keys(patch).length === 0) {
-        this.setStatus("AI changes were ignored (lens changes require explicit prompt).");
+        this.setStatus("AI changes were filtered by safety guards. Try a more explicit prompt.");
         return;
       }
 
@@ -2296,6 +2292,68 @@ function shouldAllowLensAdjustments(prompt: string): boolean {
   return keywords.some((keyword) => normalized.includes(keyword));
 }
 
+function shouldAllowDepthOfFieldAdjustments(prompt: string): boolean {
+  const normalized = prompt.toLowerCase();
+  const keywords = [
+    "bokeh",
+    "depth of field",
+    "dof",
+    "background blur",
+    "shallow focus",
+    "deep focus",
+    "portrait",
+    "macro",
+    "보케",
+    "심도",
+    "아웃포커싱",
+    "배경 흐림",
+    "인물",
+    "매크로"
+  ];
+  return keywords.some((keyword) => normalized.includes(keyword));
+}
+
+function shouldAllowShutterAdjustments(prompt: string): boolean {
+  const normalized = prompt.toLowerCase();
+  const keywords = [
+    "shutter",
+    "motion blur",
+    "long exposure",
+    "light trail",
+    "freeze motion",
+    "slow shutter",
+    "fast shutter",
+    "셔터",
+    "모션 블러",
+    "장노출",
+    "빛 궤적",
+    "움직임 정지"
+  ];
+  return keywords.some((keyword) => normalized.includes(keyword));
+}
+
+function shouldAllowAggressiveExposureAdjustments(prompt: string): boolean {
+  const normalized = prompt.toLowerCase();
+  const keywords = [
+    "brighter",
+    "darker",
+    "underexpose",
+    "overexpose",
+    "high key",
+    "low key",
+    "silhouette",
+    "dramatic light",
+    "밝게",
+    "어둡게",
+    "과노출",
+    "저노출",
+    "하이키",
+    "로우키",
+    "실루엣"
+  ];
+  return keywords.some((keyword) => normalized.includes(keyword));
+}
+
 function shouldAllowEnhancedUpscale(prompt: string): boolean {
   const normalized = prompt.toLowerCase();
   const keywords = [
@@ -2335,12 +2393,51 @@ function shouldPreferLowNoise(prompt: string): boolean {
   return keywords.some((keyword) => normalized.includes(keyword));
 }
 
-function enforceAiUpscaleSafety(
+function enforceAiPatchSafety(
   patch: AiSuggestedPatch,
   prompt: string,
   current: Readonly<CameraParams>
 ): AiSuggestedPatch {
   const next: AiSuggestedPatch = { ...patch };
+
+  const allowLens = shouldAllowLensAdjustments(prompt);
+  const allowDof = shouldAllowDepthOfFieldAdjustments(prompt);
+  const allowShutter = shouldAllowShutterAdjustments(prompt);
+  const allowAggressiveExposure = shouldAllowAggressiveExposureAdjustments(prompt);
+
+  if (!allowLens) {
+    delete next.focalLength;
+    delete next.focusDistance;
+  }
+
+  if (!allowDof) {
+    delete next.aperture;
+    delete next.focusDistance;
+  }
+
+  if (!allowShutter) {
+    delete next.shutter;
+  }
+
+  if (isFiniteNumber(next.exposureEV)) {
+    const deltaLimit = allowAggressiveExposure ? 0.9 : 0.35;
+    const limited = clamp(
+      next.exposureEV,
+      current.exposureEV - deltaLimit,
+      current.exposureEV + deltaLimit
+    );
+    next.exposureEV = clamp(limited, -1.8, 1.6);
+  }
+
+  if (!allowAggressiveExposure && next.toneMap === true && isFiniteNumber(next.exposureEV)) {
+    next.exposureEV = Math.min(next.exposureEV, current.exposureEV + 0.25);
+  }
+
+  if (isFiniteNumber(next.exposureEV) && next.exposureEV > current.exposureEV + 0.3) {
+    const baseContrast = isFiniteNumber(next.contrast) ? next.contrast : current.contrast;
+    next.contrast = Math.min(baseContrast, 1.18);
+  }
+
   const allowEnhanced = shouldAllowEnhancedUpscale(prompt) && !shouldPreferLowNoise(prompt);
   if (next.upscaleStyle === "enhanced" && !allowEnhanced) {
     next.upscaleStyle = "balanced";
@@ -2377,6 +2474,9 @@ async function requestAiCameraPatch(
           "Change at least 3 fields unless user asks for minimal change.",
           "Respect ranges:",
           "exposureEV[-3..3], shutter[0.000125..0.066667], iso[100..6400], aperture[1.4..22], focalLength[18..120], focusDistance[0.2..50], distortion[-0.5..0.5], vignette[0..1], chromaAberration[0..1], temperature[-1..1], tint[-1..1], contrast[0.5..1.5], saturation[0..2], sharpen[0..1], noiseReduction[0..1], upscaleFactor in [1,1.5,2,2.5,3,3.5,4], upscaleStyle in [balanced,enhanced].",
+          "Keep exposure conservative by default; unless user explicitly requests brighter/darker look, keep exposureEV delta within +-0.35 from current.",
+          "Do not change aperture/focusDistance unless user explicitly asks for depth-of-field or bokeh changes.",
+          "Do not change shutter unless user explicitly asks for motion blur, long exposure, or shutter behavior.",
           "Default upscaleStyle to balanced.",
           "Use enhanced only if user explicitly asks for stronger texture/grain/detail and does not ask for a clean/low-noise image.",
           "Do not change focalLength or focusDistance unless the prompt explicitly asks for lens/zoom/focus/depth-of-field change."
