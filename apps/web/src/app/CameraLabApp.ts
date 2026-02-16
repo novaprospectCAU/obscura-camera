@@ -466,10 +466,14 @@ export class CameraLabApp {
 
     const { presetApplyButton, presetResetButton, presetSelect, status } = this.elements;
 
+    presetSelect.addEventListener("change", () => {
+      const presetName = presetSelect.value as CameraPresetName;
+      this.applyPreset(presetName);
+    });
+
     presetApplyButton.addEventListener("click", () => {
       const presetName = presetSelect.value as CameraPresetName;
-      this.params.patch(CAMERA_PRESETS[presetName]);
-      status.textContent = `Applied ${presetName} preset.`;
+      this.applyPreset(presetName);
     });
 
     presetResetButton.addEventListener("click", () => {
@@ -791,6 +795,21 @@ export class CameraLabApp {
     }
 
     this.renderHistogramCanvas(ctx, canvas, histogram);
+  }
+
+  private applyPreset(presetName: CameraPresetName): void {
+    if (!this.elements) {
+      return;
+    }
+
+    const preset = CAMERA_PRESETS[presetName];
+    if (!preset) {
+      this.elements.status.textContent = `Preset not found: ${presetName}`;
+      return;
+    }
+
+    this.params.patch(preset);
+    this.elements.status.textContent = `Applied ${presetName} preset.`;
   }
 
   private renderHistogramCanvas(
