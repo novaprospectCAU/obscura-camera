@@ -24,6 +24,7 @@ This folder contains the initial web MVP with:
 - Tap-to-meter Auto Exposure / Auto Focus with AE/AF lock toggle
 - Sharpen and ISO-aware Noise Reduction controls
 - Performance modes: Quality / Balanced / Fast (preview resolution scaling, high-quality snapshot export)
+- Parameter UI theme switch: `Sliders` or camera-style `Dials`
 
 Not included yet:
 

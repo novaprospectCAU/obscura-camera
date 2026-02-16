@@ -243,10 +243,91 @@ body {
   gap: 0.45rem;
 }
 
+.theme-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.theme-row span {
+  color: var(--muted);
+  font-size: 0.83rem;
+}
+
+.theme-row select {
+  border: 1px solid var(--panel-border);
+  background: #10151d;
+  color: var(--text);
+  border-radius: 0.45rem;
+  padding: 0.45rem 0.5rem;
+}
+
 .param-controls {
   display: flex;
   flex-direction: column;
   gap: 0.48rem;
+}
+
+.param-controls.is-hidden {
+  display: none;
+}
+
+.param-dial-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.param-dial-controls.is-hidden {
+  display: none;
+}
+
+.dial-row {
+  display: grid;
+  grid-template-columns: minmax(94px, 130px) 1fr;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.dial-name {
+  color: #d9e1ed;
+  font-size: 0.83rem;
+}
+
+.dial-controls {
+  display: grid;
+  grid-template-columns: 34px 1fr 34px;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.dial-button {
+  border: 1px solid var(--panel-border);
+  background: #0f141c;
+  color: #d9e1ed;
+  border-radius: 0.45rem;
+  height: 30px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.dial-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.dial-readout {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--panel-border);
+  border-radius: 0.45rem;
+  background: #10151d;
+  color: #e7edf8;
+  min-height: 30px;
+  font-size: 0.82rem;
+  letter-spacing: 0.01em;
 }
 
 .param-row {

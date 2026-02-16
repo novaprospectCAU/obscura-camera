@@ -64,6 +64,16 @@ type SliderBinding = {
   readout: HTMLOutputElement;
 };
 
+type ControlTheme = "sliders" | "camera";
+
+type DialBinding = {
+  def: SliderControlDef;
+  minusButton: HTMLButtonElement;
+  plusButton: HTMLButtonElement;
+  readout: HTMLOutputElement;
+  values: readonly number[];
+};
+
 type AppElements = {
   canvas: HTMLCanvasElement;
   fileInput: HTMLInputElement;
@@ -88,8 +98,10 @@ type AppElements = {
   autoExposureToggle: HTMLInputElement;
   autoFocusToggle: HTMLInputElement;
   aeAfLockToggle: HTMLInputElement;
+  controlThemeSelect: HTMLSelectElement;
   histogramModeSelect: HTMLSelectElement;
   paramControls: HTMLElement;
+  paramDialControls: HTMLElement;
   histogramCanvas: HTMLCanvasElement;
   fileName: HTMLElement;
   status: HTMLElement;
@@ -99,6 +111,7 @@ type AppElements = {
 
 const SESSION_STORAGE_KEY = "obscura.session.v1";
 const CUSTOM_PRESETS_STORAGE_KEY = "obscura.custom-presets.v1";
+const CONTROL_THEME_STORAGE_KEY = "obscura.control-theme.v1";
 const BUILTIN_PRESET_NAMES: readonly CameraPresetName[] = ["Portrait", "Landscape", "Night"];
 const IDENTITY = (value: number): number => value;
 const SHUTTER_MIN = 1 / 8000;
@@ -278,12 +291,32 @@ const PARAM_SLIDER_DEFS: SliderControlDef[] = [
   }
 ];
 
+const PARAM_DIAL_VALUES: Record<NumericParamKey, readonly number[]> = {
+  exposureEV: [-3, -2, -1, -0.5, 0, 0.5, 1, 2, 3],
+  shutter: [1 / 8000, 1 / 4000, 1 / 2000, 1 / 1000, 1 / 500, 1 / 250, 1 / 125, 1 / 60, 1 / 30, 1 / 15],
+  iso: [100, 200, 400, 800, 1600, 3200, 6400],
+  aperture: [1.4, 2, 2.8, 4, 5.6, 8, 11, 16, 22],
+  focalLength: [18, 24, 28, 35, 50, 70, 85, 105, 120],
+  focusDistance: [0.2, 0.3, 0.5, 0.8, 1.2, 1.6, 2.5, 4, 6, 10, 15, 25, 50],
+  distortion: [-0.5, -0.3, -0.15, -0.05, 0, 0.05, 0.15, 0.3, 0.5],
+  vignette: [0, 0.15, 0.3, 0.45, 0.6, 0.75, 0.9, 1],
+  chromaAberration: [0, 0.05, 0.1, 0.2, 0.35, 0.5, 0.7, 1],
+  temperature: [-1, -0.7, -0.4, -0.2, 0, 0.2, 0.4, 0.7, 1],
+  tint: [-1, -0.7, -0.4, -0.2, 0, 0.2, 0.4, 0.7, 1],
+  contrast: [0.5, 0.7, 0.85, 1, 1.15, 1.3, 1.5],
+  saturation: [0, 0.4, 0.7, 1, 1.3, 1.6, 2],
+  sharpen: [0, 0.15, 0.3, 0.45, 0.6, 0.8, 1],
+  noiseReduction: [0, 0.15, 0.3, 0.45, 0.6, 0.8, 1]
+};
+
 export class CameraLabApp {
   private readonly root: HTMLElement;
   private readonly params = new CameraParamStore(DEFAULT_CAMERA_PARAMS);
   private readonly sliderBindings: SliderBinding[] = [];
+  private readonly dialBindings: DialBinding[] = [];
   private renderer?: WebGLImageRenderer;
   private elements?: AppElements;
+  private controlTheme: ControlTheme = "sliders";
   private sourceMode: SourceMode = "image";
   private hasImage = false;
   private webcamStream?: MediaStream;
@@ -437,7 +470,15 @@ export class CameraLabApp {
 
           <section class="control-block param-section">
             <p class="control-title">Camera Parameters</p>
+            <label class="theme-row" for="control-theme-select">
+              <span>Control Theme</span>
+              <select id="control-theme-select">
+                <option value="sliders">Sliders</option>
+                <option value="camera">Camera Dials</option>
+              </select>
+            </label>
             <div id="param-controls" class="param-controls"></div>
+            <div id="param-dial-controls" class="param-dial-controls is-hidden"></div>
           </section>
 
           <section class="control-block">
@@ -467,11 +508,15 @@ export class CameraLabApp {
     this.elements = this.collectElements();
     this.renderer = new WebGLImageRenderer(this.elements.canvas);
     this.createParameterControls();
+    this.createParameterDialControls();
+    this.restoreControlTheme();
+    this.syncControlThemeView();
     this.bindFileInput();
     this.bindDragAndDrop();
     this.bindSourceButtons();
     this.bindPresetControls();
     this.bindPreviewControls();
+    this.bindControlTheme();
     this.bindMeteringControls();
     this.bindSnapshotControl();
 
@@ -543,8 +588,10 @@ export class CameraLabApp {
       autoExposureToggle: this.requireElement<HTMLInputElement>("#auto-exposure-toggle"),
       autoFocusToggle: this.requireElement<HTMLInputElement>("#auto-focus-toggle"),
       aeAfLockToggle: this.requireElement<HTMLInputElement>("#aeaf-lock-toggle"),
+      controlThemeSelect: this.requireElement<HTMLSelectElement>("#control-theme-select"),
       histogramModeSelect: this.requireElement<HTMLSelectElement>("#histogram-mode-select"),
       paramControls: this.requireElement<HTMLElement>("#param-controls"),
+      paramDialControls: this.requireElement<HTMLElement>("#param-dial-controls"),
       histogramCanvas: this.requireElement<HTMLCanvasElement>("#histogram-canvas"),
       fileName: this.requireElement<HTMLElement>("#file-name"),
       status: this.requireElement<HTMLElement>("#status"),
@@ -593,6 +640,60 @@ export class CameraLabApp {
         def,
         input,
         readout
+      });
+    }
+  }
+
+  private createParameterDialControls(): void {
+    if (!this.elements) {
+      return;
+    }
+
+    this.dialBindings.length = 0;
+    this.elements.paramDialControls.innerHTML = "";
+
+    for (const def of PARAM_SLIDER_DEFS) {
+      const values = PARAM_DIAL_VALUES[def.key];
+      const row = document.createElement("div");
+      row.className = "dial-row";
+
+      const name = document.createElement("span");
+      name.className = "dial-name";
+      name.textContent = def.label;
+
+      const controls = document.createElement("div");
+      controls.className = "dial-controls";
+
+      const minusButton = document.createElement("button");
+      minusButton.type = "button";
+      minusButton.className = "dial-button";
+      minusButton.textContent = "-";
+
+      const readout = document.createElement("output");
+      readout.className = "dial-readout";
+
+      const plusButton = document.createElement("button");
+      plusButton.type = "button";
+      plusButton.className = "dial-button";
+      plusButton.textContent = "+";
+
+      controls.append(minusButton, readout, plusButton);
+      row.append(name, controls);
+      this.elements.paramDialControls.append(row);
+
+      minusButton.addEventListener("click", () => {
+        this.stepDialValue(def.key, -1);
+      });
+      plusButton.addEventListener("click", () => {
+        this.stepDialValue(def.key, 1);
+      });
+
+      this.dialBindings.push({
+        def,
+        minusButton,
+        plusButton,
+        readout,
+        values
       });
     }
   }
@@ -715,6 +816,47 @@ export class CameraLabApp {
     histogramModeSelect.addEventListener("change", () => {
       this.params.set("histogramMode", histogramModeSelect.value as HistogramMode);
     });
+  }
+
+  private bindControlTheme(): void {
+    if (!this.elements) {
+      return;
+    }
+
+    this.elements.controlThemeSelect.addEventListener("change", () => {
+      const nextTheme = parseControlTheme(this.elements?.controlThemeSelect.value);
+      this.controlTheme = nextTheme;
+      writeStorage(CONTROL_THEME_STORAGE_KEY, nextTheme);
+      this.syncControlThemeView();
+    });
+  }
+
+  private restoreControlTheme(): void {
+    const raw = readStorage(CONTROL_THEME_STORAGE_KEY);
+    this.controlTheme = parseControlTheme(raw);
+  }
+
+  private syncControlThemeView(): void {
+    if (!this.elements) {
+      return;
+    }
+
+    this.elements.controlThemeSelect.value = this.controlTheme;
+    const isCameraTheme = this.controlTheme === "camera";
+    this.elements.paramControls.classList.toggle("is-hidden", isCameraTheme);
+    this.elements.paramDialControls.classList.toggle("is-hidden", !isCameraTheme);
+  }
+
+  private stepDialValue(key: NumericParamKey, delta: -1 | 1): void {
+    const state = this.params.getState();
+    const values = PARAM_DIAL_VALUES[key];
+    if (values.length === 0) {
+      return;
+    }
+
+    const currentIndex = findNearestValueIndex(values, state[key]);
+    const nextIndex = clamp(currentIndex + delta, 0, values.length - 1);
+    this.params.set(key, values[nextIndex]);
   }
 
   private bindMeteringControls(): void {
@@ -901,6 +1043,14 @@ export class CameraLabApp {
       const nextRaw = clamp(binding.def.toRaw(currentValue), binding.def.min, binding.def.max);
       binding.input.value = `${nextRaw}`;
       binding.readout.textContent = binding.def.format(currentValue);
+    }
+
+    for (const binding of this.dialBindings) {
+      const currentValue = state[binding.def.key];
+      const index = findNearestValueIndex(binding.values, currentValue);
+      binding.readout.textContent = binding.def.format(currentValue);
+      binding.minusButton.disabled = index <= 0;
+      binding.plusButton.disabled = index >= binding.values.length - 1;
     }
   }
 
@@ -1596,6 +1746,29 @@ function parsePreviewScale(raw: string): number {
     return 0.75;
   }
   return 1;
+}
+
+function parseControlTheme(raw: string | null | undefined): ControlTheme {
+  return raw === "camera" ? "camera" : "sliders";
+}
+
+function findNearestValueIndex(values: readonly number[], target: number): number {
+  if (values.length === 0) {
+    return 0;
+  }
+
+  let bestIndex = 0;
+  let bestDistance = Math.abs(values[0] - target);
+
+  for (let i = 1; i < values.length; i += 1) {
+    const distance = Math.abs(values[i] - target);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = i;
+    }
+  }
+
+  return bestIndex;
 }
 
 function mapCanvasToImageUv(
