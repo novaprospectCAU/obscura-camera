@@ -17,7 +17,7 @@ export type HistogramData = {
 const HISTOGRAM_BINS = 64;
 const HISTOGRAM_SIZE = 128;
 const HISTOGRAM_INTERVAL_MS = 200;
-const MAX_PROCESS_DIMENSION = 4096;
+const DEFAULT_MAX_PROCESS_PIXELS = 32_000_000;
 
 const VERTEX_SHADER_SOURCE = `#version 300 es
 layout(location = 0) in vec2 aPosition;
@@ -335,6 +335,8 @@ export class WebGLImageRenderer {
   private sourceHeight = 1;
   private processWidth = 1;
   private processHeight = 1;
+  private readonly maxProcessDimension: number;
+  private readonly maxProcessPixels: number;
   private frameIndex = 0;
   private params: CameraParams = { ...DEFAULT_CAMERA_PARAMS };
   private lastHistogramUpdateMs = -Infinity;
@@ -351,6 +353,9 @@ export class WebGLImageRenderer {
       throw new Error("WebGL2 is unavailable in this browser.");
     }
     this.gl = gl;
+    const maxTextureSize = Number(this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE) ?? 4096);
+    this.maxProcessDimension = Math.max(2048, Math.min(maxTextureSize, 8192));
+    this.maxProcessPixels = DEFAULT_MAX_PROCESS_PIXELS;
 
     const quad = this.createFullscreenQuad();
     this.vao = quad.vao;
@@ -787,8 +792,15 @@ export class WebGLImageRenderer {
     let nextHeight = Math.max(1, Math.floor(this.sourceHeight * upscale * previewScale));
 
     const maxDim = Math.max(nextWidth, nextHeight);
-    if (maxDim > MAX_PROCESS_DIMENSION) {
-      const downscale = MAX_PROCESS_DIMENSION / maxDim;
+    if (maxDim > this.maxProcessDimension) {
+      const downscale = this.maxProcessDimension / maxDim;
+      nextWidth = Math.max(1, Math.floor(nextWidth * downscale));
+      nextHeight = Math.max(1, Math.floor(nextHeight * downscale));
+    }
+
+    const pixelCount = nextWidth * nextHeight;
+    if (pixelCount > this.maxProcessPixels) {
+      const downscale = Math.sqrt(this.maxProcessPixels / pixelCount);
       nextWidth = Math.max(1, Math.floor(nextWidth * downscale));
       nextHeight = Math.max(1, Math.floor(nextHeight * downscale));
     }
