@@ -1,9 +1,7 @@
 import {
-  CAMERA_PRESETS,
   CameraParamStore,
   DEFAULT_CAMERA_PARAMS,
   type CameraParams,
-  type CameraPresetName,
   type HistogramMode,
   type UpscaleFactor,
   type UpscaleStyle
@@ -118,7 +116,6 @@ type AppElements = {
 const SESSION_STORAGE_KEY = "obscura.session.v1";
 const CUSTOM_PRESETS_STORAGE_KEY = "obscura.custom-presets.v1";
 const CONTROL_THEME_STORAGE_KEY = "obscura.control-theme.v1";
-const BUILTIN_PRESET_NAMES: readonly CameraPresetName[] = ["Portrait", "Landscape", "Night"];
 const IDENTITY = (value: number): number => value;
 const SHUTTER_MIN = 1 / 8000;
 const SHUTTER_MAX = 1 / 15;
@@ -393,9 +390,7 @@ export class CameraLabApp {
       <div class="app-shell">
         <aside class="control-panel">
           <h1>CameraLab Web MVP</h1>
-          <p class="lead">
-            T8+ implementation: snapshot, custom presets, histogram modes, and session restore.
-          </p>
+          <p class="lead">Web camera lab: snapshot, custom presets, histogram modes, and session restore.</p>
 
           <section class="control-block">
             <p class="control-title">Source</p>
@@ -412,7 +407,7 @@ export class CameraLabApp {
           </section>
 
           <section class="control-block">
-            <p class="control-title">Presets</p>
+            <p class="control-title">Custom Presets</p>
             <div class="preset-row">
               <select id="preset-select"></select>
               <button id="preset-apply" class="mini-button" type="button">Apply</button>
@@ -1502,24 +1497,11 @@ export class CameraLabApp {
   private applyPresetSelection(selection: string): void {
     const parsed = this.parsePresetSelection(selection);
     if (!parsed) {
-      this.setStatus("Invalid preset selection.");
+      this.setStatus("No custom preset selected.");
       return;
     }
 
     const currentFocalLength = this.params.getState().focalLength;
-
-    if (parsed.kind === "builtin") {
-      const preset = CAMERA_PRESETS[parsed.name];
-      this.params.patch({
-        ...preset,
-        focalLength: currentFocalLength
-      });
-      if (this.elements) {
-        this.elements.presetNameInput.value = "";
-      }
-      this.setStatus(`Applied ${parsed.name} preset (kept focal length).`);
-      return;
-    }
 
     const preset = this.customPresets[parsed.name];
     if (!preset) {
@@ -1543,8 +1525,7 @@ export class CameraLabApp {
     }
 
     const currentSelection = this.parsePresetSelection(this.elements.presetSelect.value);
-    const fallbackName =
-      currentSelection && currentSelection.kind === "custom" ? currentSelection.name : "";
+    const fallbackName = currentSelection ? currentSelection.name : "";
     const finalName = requestedName || fallbackName;
 
     if (!finalName) {
@@ -1566,7 +1547,7 @@ export class CameraLabApp {
 
     const selected = this.parsePresetSelection(this.elements.presetSelect.value);
     const fromInput = this.elements.presetNameInput.value.trim();
-    const targetName = selected && selected.kind === "custom" ? selected.name : fromInput;
+    const targetName = selected ? selected.name : fromInput;
 
     if (!targetName) {
       this.setStatus("Select or enter a custom preset to delete.");
@@ -1594,16 +1575,6 @@ export class CameraLabApp {
     const previousValue = preferredSelection ?? select.value;
     select.innerHTML = "";
 
-    const builtinGroup = document.createElement("optgroup");
-    builtinGroup.label = "Built-in";
-    for (const name of BUILTIN_PRESET_NAMES) {
-      const option = document.createElement("option");
-      option.value = `builtin:${name}`;
-      option.textContent = name;
-      builtinGroup.append(option);
-    }
-    select.append(builtinGroup);
-
     const customNames = Object.keys(this.customPresets).sort((a, b) => a.localeCompare(b));
     if (customNames.length > 0) {
       const customGroup = document.createElement("optgroup");
@@ -1615,23 +1586,29 @@ export class CameraLabApp {
         customGroup.append(option);
       }
       select.append(customGroup);
+    } else {
+      const emptyOption = document.createElement("option");
+      emptyOption.value = "";
+      emptyOption.textContent = "No custom presets";
+      select.append(emptyOption);
     }
 
     const hasPrevious = [...select.options].some((option) => option.value === previousValue);
-    select.value = hasPrevious ? previousValue : "builtin:Portrait";
-  }
-
-  private parsePresetSelection(
-    selection: string
-  ): { kind: "builtin"; name: CameraPresetName } | { kind: "custom"; name: string } | null {
-    if (selection.startsWith("builtin:")) {
-      const name = selection.slice("builtin:".length) as CameraPresetName;
-      return BUILTIN_PRESET_NAMES.includes(name) ? { kind: "builtin", name } : null;
+    if (hasPrevious) {
+      select.value = previousValue;
+    } else {
+      select.value = customNames.length > 0 ? `custom:${customNames[0]}` : "";
     }
 
+    const hasCustom = customNames.length > 0;
+    this.elements.presetApplyButton.disabled = !hasCustom;
+    this.elements.presetDeleteButton.disabled = !hasCustom;
+  }
+
+  private parsePresetSelection(selection: string): { name: string } | null {
     if (selection.startsWith("custom:")) {
       const name = selection.slice("custom:".length);
-      return name ? { kind: "custom", name } : null;
+      return name ? { name } : null;
     }
 
     return null;

@@ -53,68 +53,6 @@ export const DEFAULT_CAMERA_PARAMS: CameraParams = {
   histogramMode: "composite"
 };
 
-export type CameraPresetName = "Portrait" | "Landscape" | "Night";
-
-export const CAMERA_PRESETS: Record<CameraPresetName, Partial<CameraParams>> = {
-  Portrait: {
-    exposureEV: 0.15,
-    shutter: 1 / 200,
-    iso: 160,
-    aperture: 2.0,
-    focalLength: 85,
-    focusDistance: 1.5,
-    distortion: -0.03,
-    vignette: 0.24,
-    chromaAberration: 0.04,
-    temperature: 0.1,
-    tint: 0.02,
-    contrast: 1.02,
-    saturation: 1.07,
-    sharpen: 0.3,
-    noiseReduction: 0.12,
-    toneMap: true,
-    upscaleStyle: "balanced"
-  },
-  Landscape: {
-    exposureEV: -0.2,
-    shutter: 1 / 320,
-    iso: 100,
-    aperture: 11,
-    focalLength: 28,
-    focusDistance: 25,
-    distortion: 0.04,
-    vignette: 0.14,
-    chromaAberration: 0.02,
-    temperature: -0.05,
-    tint: -0.02,
-    contrast: 1.1,
-    saturation: 1.2,
-    sharpen: 0.42,
-    noiseReduction: 0.06,
-    toneMap: true,
-    upscaleStyle: "enhanced"
-  },
-  Night: {
-    exposureEV: 1.3,
-    shutter: 1 / 20,
-    iso: 3200,
-    aperture: 1.8,
-    focalLength: 35,
-    focusDistance: 6,
-    distortion: 0,
-    vignette: 0.35,
-    chromaAberration: 0.1,
-    temperature: -0.1,
-    tint: 0.06,
-    contrast: 0.9,
-    saturation: 0.82,
-    sharpen: 0.18,
-    noiseReduction: 0.52,
-    toneMap: true,
-    upscaleStyle: "enhanced"
-  }
-};
-
 type StateListener = (state: Readonly<CameraParams>) => void;
 
 export class CameraParamStore {

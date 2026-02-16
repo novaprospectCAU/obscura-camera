@@ -10,13 +10,12 @@ This folder contains the initial web MVP with:
 - Source toggle (image/webcam)
 - Parameter state store with change listeners
 - Camera sliders + numeric readouts
-- Presets (Portrait / Landscape / Night)
+- Custom presets (save/load via localStorage)
 - Preview modes: A / B / Split + split slider
 - Multi-pass WebGL pipeline (`input -> lens -> effects -> composite`)
 - RGB histogram panel (CPU readback, ~200ms interval)
 - Keyboard shortcuts: `Space` (A/B), `S` (split), `R` (reset)
 - PNG snapshot export
-- Custom preset save/load (localStorage)
 - Histogram source mode selector (Original / Processed / Composite)
 - Session state restore on reload (localStorage)
 - Camera color controls: white balance (temp/tint), contrast, saturation
