@@ -218,10 +218,6 @@ void main() {
     finalColor = originalColor;
   } else if (uPreviewMode > 1.5) {
     finalColor = vUv.x < uSplitPosition ? originalColor : processedColor;
-    float splitLine = abs(vUv.x - uSplitPosition);
-    if (splitLine < (1.0 / uCanvasSize.x)) {
-      finalColor = mix(finalColor, vec3(0.96), 0.75);
-    }
   }
 
   outColor = vec4(finalColor, 1.0);
