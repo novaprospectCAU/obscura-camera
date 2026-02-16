@@ -423,6 +423,69 @@ export class WebGLImageRenderer {
     return this.histogram;
   }
 
+  getEffectiveProcessScale(): { x: number; y: number } {
+    return {
+      x: this.processWidth / this.sourceWidth,
+      y: this.processHeight / this.sourceHeight
+    };
+  }
+
+  captureSnapshotCanvas(upscaleFactor: UpscaleFactor): HTMLCanvasElement | null {
+    this.runInputPass();
+    this.runLensPass();
+    this.runEffectsPass();
+
+    const target = this.computeSnapshotSize(upscaleFactor);
+    const framebuffer = this.gl.createFramebuffer();
+    const texture = this.createTexture();
+    if (!framebuffer || !texture) {
+      return null;
+    }
+
+    this.gl.bindTexture(this.gl.TEXTURE_2D, texture);
+    this.gl.texImage2D(
+      this.gl.TEXTURE_2D,
+      0,
+      this.gl.RGBA,
+      target.width,
+      target.height,
+      0,
+      this.gl.RGBA,
+      this.gl.UNSIGNED_BYTE,
+      null
+    );
+
+    this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, framebuffer);
+    this.gl.framebufferTexture2D(
+      this.gl.FRAMEBUFFER,
+      this.gl.COLOR_ATTACHMENT0,
+      this.gl.TEXTURE_2D,
+      texture,
+      0
+    );
+
+    this.gl.viewport(0, 0, target.width, target.height);
+    this.drawComposite(target.width, target.height, target.width, target.height);
+
+    const pixels = new Uint8Array(target.width * target.height * 4);
+    this.gl.readPixels(
+      0,
+      0,
+      target.width,
+      target.height,
+      this.gl.RGBA,
+      this.gl.UNSIGNED_BYTE,
+      pixels
+    );
+
+    this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
+    this.gl.bindTexture(this.gl.TEXTURE_2D, null);
+    this.gl.deleteFramebuffer(framebuffer);
+    this.gl.deleteTexture(texture);
+
+    return pixelsToCanvas(pixels, target.width, target.height);
+  }
+
   dispose(): void {
     this.pingPong.dispose();
     this.gl.deleteTexture(this.sourceTexture);
@@ -814,6 +877,27 @@ export class WebGLImageRenderer {
     this.pingPong.resize(nextWidth, nextHeight);
   }
 
+  private computeSnapshotSize(upscaleFactor: UpscaleFactor): { width: number; height: number } {
+    let width = Math.max(1, Math.floor(this.sourceWidth * upscaleFactor));
+    let height = Math.max(1, Math.floor(this.sourceHeight * upscaleFactor));
+
+    const maxDim = Math.max(width, height);
+    if (maxDim > this.maxProcessDimension) {
+      const scale = this.maxProcessDimension / maxDim;
+      width = Math.max(1, Math.floor(width * scale));
+      height = Math.max(1, Math.floor(height * scale));
+    }
+
+    const pixelCount = width * height;
+    if (pixelCount > this.maxProcessPixels) {
+      const scale = Math.sqrt(this.maxProcessPixels / pixelCount);
+      width = Math.max(1, Math.floor(width * scale));
+      height = Math.max(1, Math.floor(height * scale));
+    }
+
+    return { width, height };
+  }
+
   private coerceUpscaleFactor(value: number): UpscaleFactor {
     if (value >= 4) {
       return 4;
@@ -965,4 +1049,26 @@ export class WebGLImageRenderer {
 
 function clampNumber(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+function pixelsToCanvas(pixels: Uint8Array, width: number, height: number): HTMLCanvasElement | null {
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    return null;
+  }
+
+  const flipped = new Uint8ClampedArray(pixels.length);
+  const rowSize = width * 4;
+  for (let y = 0; y < height; y += 1) {
+    const src = y * rowSize;
+    const dst = (height - 1 - y) * rowSize;
+    flipped.set(pixels.subarray(src, src + rowSize), dst);
+  }
+
+  ctx.putImageData(new ImageData(flipped, width, height), 0, 0);
+  return canvas;
 }

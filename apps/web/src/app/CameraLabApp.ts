@@ -119,7 +119,6 @@ const BUILTIN_PRESET_NAMES: readonly CameraPresetName[] = ["Portrait", "Landscap
 const IDENTITY = (value: number): number => value;
 const SHUTTER_MIN = 1 / 8000;
 const SHUTTER_MAX = 1 / 15;
-const SNAPSHOT_MAX_DIMENSION = 8192;
 const DIAL_MIN_ANGLE_DEG = -140;
 const DIAL_MAX_ANGLE_DEG = 140;
 const DIAL_SWEEP_DEG = DIAL_MAX_ANGLE_DEG - DIAL_MIN_ANGLE_DEG;
@@ -837,6 +836,12 @@ export class CameraLabApp {
     });
     upscaleSelect.addEventListener("change", () => {
       this.params.set("upscaleFactor", parseUpscaleFactor(upscaleSelect.value));
+      const effective = this.renderer?.getEffectiveProcessScale();
+      if (effective) {
+        const x = effective.x.toFixed(2);
+        const y = effective.y.toFixed(2);
+        this.setStatus(`Upscale applied (effective ${x}x / ${y}x).`);
+      }
     });
     performanceSelect.addEventListener("change", () => {
       this.params.set("previewScale", parsePreviewScale(performanceSelect.value));
@@ -1427,7 +1432,7 @@ export class CameraLabApp {
   }
 
   private async captureSnapshotPng(): Promise<void> {
-    if (!this.elements) {
+    if (!this.elements || !this.renderer) {
       return;
     }
 
@@ -1440,9 +1445,12 @@ export class CameraLabApp {
         await waitForNextFrame();
       }
 
-      const sourceCanvas = this.elements.canvas;
       const factor = this.params.getState().upscaleFactor;
-      const canvas = createSnapshotCanvas(sourceCanvas, factor);
+      const canvas = this.renderer.captureSnapshotCanvas(factor);
+      if (!canvas) {
+        this.setStatus("Failed to capture snapshot.");
+        return;
+      }
       const blob = await canvasToPngBlob(canvas);
       if (!blob) {
         this.setStatus("Failed to capture snapshot.");
@@ -1955,33 +1963,6 @@ function srgbToLinear(value: number): number {
     return value / 12.92;
   }
   return Math.pow((value + 0.055) / 1.055, 2.4);
-}
-
-function createSnapshotCanvas(source: HTMLCanvasElement, factor: UpscaleFactor): HTMLCanvasElement {
-  if (factor === 1) {
-    return source;
-  }
-
-  const scaledWidth = Math.max(1, Math.floor(source.width * factor));
-  const scaledHeight = Math.max(1, Math.floor(source.height * factor));
-  const maxDim = Math.max(scaledWidth, scaledHeight);
-  const scaleDown = maxDim > SNAPSHOT_MAX_DIMENSION ? SNAPSHOT_MAX_DIMENSION / maxDim : 1;
-  const width = Math.max(1, Math.floor(scaledWidth * scaleDown));
-  const height = Math.max(1, Math.floor(scaledHeight * scaleDown));
-
-  const target = document.createElement("canvas");
-  target.width = width;
-  target.height = height;
-
-  const ctx = target.getContext("2d");
-  if (!ctx) {
-    return source;
-  }
-
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = "high";
-  ctx.drawImage(source, 0, 0, width, height);
-  return target;
 }
 
 function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob | null> {
