@@ -2152,8 +2152,21 @@ export class CameraLabApp {
 
     const params = state ?? this.params.getState();
     const lensCenter = lensCenterFromShiftWeights(params.lensShiftX, params.lensShiftY);
-    const focusX = lensCenter.x;
-    const focusY = lensCenter.y;
+    const dims = this.getActiveSourceDimensions();
+    let focusX = lensCenter.x;
+    let focusY = lensCenter.y;
+    if (dims) {
+      const mapped = mapImageUvToCanvasNormalized(
+        lensCenter.x,
+        lensCenter.y,
+        Math.max(1, this.elements.canvas.clientWidth),
+        Math.max(1, this.elements.canvas.clientHeight),
+        dims.width,
+        dims.height
+      );
+      focusX = mapped.x;
+      focusY = mapped.y;
+    }
 
     const apertureNorm = clamp((params.aperture - 1.4) / (22 - 1.4), 0, 1);
     const ringSize = Math.round(74 + (1 - apertureNorm) * 58);
@@ -3348,6 +3361,34 @@ function mapCanvasToImageUv(
   }
 
   return { x, y };
+}
+
+function mapImageUvToCanvasNormalized(
+  imageUvX: number,
+  imageUvY: number,
+  canvasWidth: number,
+  canvasHeight: number,
+  imageWidth: number,
+  imageHeight: number
+): { x: number; y: number } {
+  const imageAspect = imageWidth / imageHeight;
+  const canvasAspect = canvasWidth / canvasHeight;
+
+  let x = imageUvX;
+  let y = imageUvY;
+
+  if (canvasAspect > imageAspect) {
+    const xScale = imageAspect / canvasAspect;
+    x = (imageUvX - 0.5) * xScale + 0.5;
+  } else {
+    const yScale = canvasAspect / imageAspect;
+    y = (imageUvY - 0.5) * yScale + 0.5;
+  }
+
+  return {
+    x: clamp(x, 0, 1),
+    y: clamp(y, 0, 1)
+  };
 }
 
 function computeAutoExposure(luminance: number): number {
