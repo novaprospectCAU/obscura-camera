@@ -1626,7 +1626,23 @@ export class CameraLabApp {
   }
 
   private syncLensShiftFromMarkers(): void {
-    const focusMarker = this.markers.find((marker) => marker.kind === "focus");
+    let focusMarker: LensMarker | undefined;
+    if (this.selectedMarkerId) {
+      const selected = this.markers.find(
+        (marker) => marker.id === this.selectedMarkerId && marker.kind === "focus"
+      );
+      if (selected) {
+        focusMarker = selected;
+      }
+    }
+    if (!focusMarker) {
+      for (let i = this.markers.length - 1; i >= 0; i -= 1) {
+        if (this.markers[i].kind === "focus") {
+          focusMarker = this.markers[i];
+          break;
+        }
+      }
+    }
     if (!focusMarker) {
       return;
     }

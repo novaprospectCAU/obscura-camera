@@ -246,6 +246,17 @@ float accumulateMarkerInfluence(vec2 uv, vec4 markers[6], int markerCount) {
   return clamp(influence, 0.0, 1.0);
 }
 
+float maxMarkerInfluence(vec2 uv, vec4 markers[6], int markerCount) {
+  float influence = 0.0;
+  for (int i = 0; i < 6; i += 1) {
+    if (i >= markerCount) {
+      break;
+    }
+    influence = max(influence, markerInfluence(uv, markers[i]));
+  }
+  return clamp(influence, 0.0, 1.0);
+}
+
 void main() {
   float shutterNorm = clamp(
     (log(uShutter) - log(1.0 / 8000.0)) / (log(1.0 / 15.0) - log(1.0 / 8000.0)),
@@ -272,8 +283,11 @@ void main() {
   float outsideFocus = max(0.0, sceneRadius - focusRadius);
   float coc = clamp(outsideFocus * 2.4, 0.0, 1.0);
   float focusMarkerInfluence = accumulateMarkerInfluence(vUv, uFocusMarkers, uFocusMarkerCount);
+  float focusMarkerPeak = maxMarkerInfluence(vUv, uFocusMarkers, uFocusMarkerCount);
   float blurMarkerInfluence = accumulateMarkerInfluence(vUv, uBlurMarkers, uBlurMarkerCount);
-  coc *= (1.0 - focusMarkerInfluence * 0.86);
+  // Focus markers should create clearly sharp local islands, not subtle blur reduction.
+  coc = mix(coc, 0.0, focusMarkerPeak * 0.98);
+  coc = max(0.0, coc - focusMarkerInfluence * 0.42);
   coc = clamp(coc + blurMarkerInfluence * 0.82, 0.0, 1.0);
   float protectedSubject = subjectMask(vUv, safeSubjectBox) * subjectBlend;
   coc = mix(coc, coc * 0.22, protectedSubject);
@@ -1198,7 +1212,7 @@ export class WebGLImageRenderer {
       }
       const base = count * 4;
       target[base] = clampNumber(marker.x, 0, 1);
-      target[base + 1] = clampNumber(marker.y, 0, 1);
+      target[base + 1] = 1 - clampNumber(marker.y, 0, 1);
       target[base + 2] = clampNumber(marker.radius, 0.05, 0.45);
       target[base + 3] = clampNumber(marker.strength, 0, 1);
       count += 1;
