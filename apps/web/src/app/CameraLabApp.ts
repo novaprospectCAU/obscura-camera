@@ -6,7 +6,11 @@ import {
   type UpscaleFactor,
   type UpscaleStyle
 } from "./state";
-import { type HistogramData, WebGLImageRenderer } from "./gl/WebGLImageRenderer";
+import {
+  type HistogramData,
+  type RendererSubjectContext,
+  WebGLImageRenderer
+} from "./gl/WebGLImageRenderer";
 
 type SourceMode = "image" | "webcam";
 type NumericParamKey =
@@ -148,6 +152,7 @@ const SHUTTER_MAX = 1 / 15;
 const DIAL_MIN_ANGLE_DEG = -140;
 const DIAL_MAX_ANGLE_DEG = 140;
 const DIAL_SWEEP_DEG = DIAL_MAX_ANGLE_DEG - DIAL_MIN_ANGLE_DEG;
+const SUBJECT_ANALYSIS_INTERVAL_MS = 320;
 
 const PARAM_VALUE_LIMITS: Record<NumericParamKey, { min: number; max: number }> = {
   exposureEV: { min: -3, max: 3 },
@@ -377,6 +382,8 @@ export class CameraLabApp {
   private customPresets: Record<string, PresetPatch> = {};
   private loadedImage?: HTMLImageElement;
   private aiRequestInFlight = false;
+  private latestSubjectContext: SubjectContext | null = null;
+  private lastSubjectAnalysisMs = -Infinity;
   private readonly meterCanvas = document.createElement("canvas");
 
   private readonly onResize = () => {
@@ -1302,10 +1309,11 @@ export class CameraLabApp {
       this.updateSourceButtons();
 
       this.renderer.setImage(image);
+      this.loadedImage = image;
+      this.updateSubjectContextForRenderer(true);
       this.renderer.render();
       this.drawHistogram();
 
-      this.loadedImage = image;
       this.hasImage = true;
       this.elements.fileName.textContent = file.name;
       this.setStatus(`Loaded ${file.name}`);
@@ -1326,6 +1334,7 @@ export class CameraLabApp {
       this.disableWebcam();
       this.sourceMode = "image";
       this.updateSourceButtons();
+      this.updateSubjectContextForRenderer(true);
       this.refreshEmptyState();
       this.renderer.render();
       this.drawHistogram();
@@ -1335,6 +1344,8 @@ export class CameraLabApp {
 
     this.sourceMode = "webcam";
     const switchToken = ++this.sourceSwitchToken;
+    this.latestSubjectContext = null;
+    this.renderer.setSubjectContext(null);
     this.updateSourceButtons();
     this.refreshEmptyState();
     this.setStatus("Requesting webcam permission...");
@@ -1430,6 +1441,7 @@ export class CameraLabApp {
       }
 
       this.renderer.updateVideoFrame(this.webcamVideo);
+      this.updateSubjectContextForRenderer(false);
       this.renderer.render();
       this.drawHistogram();
       this.webcamFrameHandle = requestAnimationFrame(renderFrame);
@@ -1458,6 +1470,8 @@ export class CameraLabApp {
       this.webcamStream.getTracks().forEach((track) => track.stop());
       this.webcamStream = undefined;
     }
+
+    this.lastSubjectAnalysisMs = -Infinity;
   }
 
   private updateSourceButtons(): void {
@@ -1775,7 +1789,7 @@ export class CameraLabApp {
     this.setStatus("AI is generating camera adjustments...");
 
     try {
-      const subjectContext = this.analyzeSubjectContext();
+      const subjectContext = this.updateSubjectContextForRenderer(true);
       const aiResponse = await requestAiCameraPatch(apiKey, prompt, currentState, subjectContext);
       const candidatePatch = extractAiPatchCandidate(aiResponse.patch);
       let patch = sanitizeAiSuggestedPatch(candidatePatch);
@@ -1847,6 +1861,26 @@ export class CameraLabApp {
     ctx.drawImage(target, 0, 0, analysisWidth, analysisHeight);
     const imageData = ctx.getImageData(0, 0, analysisWidth, analysisHeight);
     return estimateSubjectContext(imageData.data, analysisWidth, analysisHeight);
+  }
+
+  private updateSubjectContextForRenderer(force: boolean): SubjectContext | null {
+    if (!this.renderer) {
+      return null;
+    }
+
+    const now = performance.now();
+    if (!force && now - this.lastSubjectAnalysisMs < SUBJECT_ANALYSIS_INTERVAL_MS) {
+      if (this.latestSubjectContext) {
+        this.renderer.setSubjectContext(toRendererSubjectContext(this.latestSubjectContext));
+      }
+      return this.latestSubjectContext;
+    }
+
+    this.lastSubjectAnalysisMs = now;
+    const nextContext = this.analyzeSubjectContext();
+    this.latestSubjectContext = nextContext;
+    this.renderer.setSubjectContext(nextContext ? toRendererSubjectContext(nextContext) : null);
+    return nextContext;
   }
 
   private restoreSessionState(): void {
@@ -2718,6 +2752,24 @@ function sanitizeSubjectContextForPrompt(subject: SubjectContext): SubjectContex
     sharpness: round(clamp(subject.sharpness, 0, 1)),
     offCenter: round(clamp(subject.offCenter, 0, 1)),
     backlit: Boolean(subject.backlit)
+  };
+}
+
+function toRendererSubjectContext(subject: SubjectContext): RendererSubjectContext {
+  const quality = clamp(subject.sharpness * 0.55 + subject.areaRatio * 0.45, 0, 1);
+  const strength = clamp(0.34 + quality * 0.66, 0.34, 1);
+  return {
+    center: {
+      x: clamp(subject.center.x, 0, 1),
+      y: clamp(subject.center.y, 0, 1)
+    },
+    box: {
+      x: clamp(subject.box.x, 0, 1),
+      y: clamp(subject.box.y, 0, 1),
+      width: clamp(subject.box.width, 0.02, 1),
+      height: clamp(subject.box.height, 0.02, 1)
+    },
+    strength
   };
 }
 

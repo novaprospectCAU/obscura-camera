@@ -27,6 +27,7 @@ This folder contains the initial web MVP with:
 - Parameter UI theme switch: `Sliders` or animated camera-style rotating `Dials` (aperture/lens-specific motion)
 - AI prompt control: enter OpenAI API key + natural-language look prompt to auto-adjust camera settings
 - Subject-aware AI prompt context (center/bbox/brightness/sharpness/backlit) to stabilize exposure/focus suggestions
+- Subject-aware rendering anchor: focus/depth and vignette weighting adapt to detected subject position instead of fixed screen center
 
 Not included yet:
 

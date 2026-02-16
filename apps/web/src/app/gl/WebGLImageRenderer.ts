@@ -14,10 +14,21 @@ export type HistogramData = {
   version: number;
 };
 
+export type RendererSubjectContext = {
+  center: { x: number; y: number };
+  box: { x: number; y: number; width: number; height: number };
+  strength: number;
+};
+
 const HISTOGRAM_BINS = 64;
 const HISTOGRAM_SIZE = 128;
 const HISTOGRAM_INTERVAL_MS = 200;
 const DEFAULT_MAX_PROCESS_PIXELS = 32_000_000;
+const DEFAULT_SUBJECT_CONTEXT: RendererSubjectContext = {
+  center: { x: 0.5, y: 0.5 },
+  box: { x: 0.3, y: 0.3, width: 0.4, height: 0.4 },
+  strength: 0
+};
 
 const VERTEX_SHADER_SOURCE = `#version 300 es
 layout(location = 0) in vec2 aPosition;
@@ -58,6 +69,8 @@ uniform float uDistortion;
 uniform float uFocalLength;
 uniform float uChromaAberration;
 uniform float uVignette;
+uniform vec2 uSubjectCenter;
+uniform float uSubjectStrength;
 
 out vec4 outColor;
 
@@ -99,7 +112,8 @@ void main() {
   }
 
   vec3 color = sampleWithChroma(lensUv);
-  float radius = length(lensUv - 0.5) * 1.4142;
+  vec2 vignetteCenter = mix(vec2(0.5), clamp(uSubjectCenter, 0.0, 1.0), clamp(uSubjectStrength, 0.0, 1.0));
+  float radius = length(lensUv - vignetteCenter) * 1.4142;
   float vignetteFactor = 1.0 - (uVignette * smoothstep(0.25, 1.0, radius));
 
   outColor = vec4(color * vignetteFactor, 1.0);
@@ -127,6 +141,9 @@ uniform float uSharpen;
 uniform float uNoiseReduction;
 uniform float uToneMapEnabled;
 uniform float uFrame;
+uniform vec2 uSubjectCenter;
+uniform vec4 uSubjectBox;
+uniform float uSubjectStrength;
 
 out vec4 outColor;
 
@@ -165,6 +182,18 @@ vec3 applyWhiteBalance(vec3 color) {
   return color * max(balance, vec3(0.0));
 }
 
+float subjectMask(vec2 uv, vec4 box) {
+  vec2 boxMin = box.xy;
+  vec2 boxMax = box.xy + box.zw;
+  float edgeSoftness = 0.045;
+
+  float left = smoothstep(boxMin.x, boxMin.x + edgeSoftness, uv.x);
+  float right = 1.0 - smoothstep(boxMax.x - edgeSoftness, boxMax.x, uv.x);
+  float top = smoothstep(boxMin.y, boxMin.y + edgeSoftness, uv.y);
+  float bottom = 1.0 - smoothstep(boxMax.y - edgeSoftness, boxMax.y, uv.y);
+  return clamp(left * right * top * bottom, 0.0, 1.0);
+}
+
 void main() {
   float shutterNorm = clamp(
     (log(uShutter) - log(1.0 / 8000.0)) / (log(1.0 / 15.0) - log(1.0 / 8000.0)),
@@ -174,10 +203,20 @@ void main() {
   float apertureNorm = clamp((uAperture - 1.4) / (22.0 - 1.4), 0.0, 1.0);
   float apertureWide = 1.0 - apertureNorm;
   float focusNorm = clamp((uFocusDistance - 0.2) / (50.0 - 0.2), 0.0, 1.0);
+  float subjectStrength = clamp(uSubjectStrength, 0.0, 1.0);
+  vec2 subjectCenter = mix(vec2(0.5), clamp(uSubjectCenter, 0.0, 1.0), subjectStrength);
+  vec2 subjectBoxMin = clamp(uSubjectBox.xy, vec2(0.0), vec2(0.98));
+  vec2 subjectBoxSize = clamp(uSubjectBox.zw, vec2(0.02), vec2(1.0));
+  vec4 safeSubjectBox = vec4(
+    subjectBoxMin,
+    min(subjectBoxSize, vec2(1.0) - subjectBoxMin)
+  );
 
-  float focusPlane = mix(0.12, 0.95, focusNorm);
-  float sceneDepth = clamp(length(vUv - 0.5) * 1.8, 0.0, 1.0);
+  float focusPlane = focusNorm;
+  float sceneDepth = clamp(length(vUv - subjectCenter) * 1.8, 0.0, 1.0);
   float coc = abs(sceneDepth - focusPlane);
+  float protectedSubject = subjectMask(vUv, safeSubjectBox) * subjectStrength;
+  coc = mix(coc, coc * 0.35, protectedSubject);
   float focusBlurStrength = mix(1.2, 9.0, apertureWide);
   float blurPixels = shutterNorm * 5.0 + coc * focusBlurStrength;
   float upscaleMag = max(1.0, max(uEffectScale.x, uEffectScale.y));
@@ -309,6 +348,8 @@ export class WebGLImageRenderer {
   private readonly lensFocalLengthUniform: WebGLUniformLocation;
   private readonly lensChromaUniform: WebGLUniformLocation;
   private readonly lensVignetteUniform: WebGLUniformLocation;
+  private readonly lensSubjectCenterUniform: WebGLUniformLocation;
+  private readonly lensSubjectStrengthUniform: WebGLUniformLocation;
 
   private readonly effectsInputUniform: WebGLUniformLocation;
   private readonly effectsResolutionUniform: WebGLUniformLocation;
@@ -326,6 +367,9 @@ export class WebGLImageRenderer {
   private readonly effectsNoiseReductionUniform: WebGLUniformLocation;
   private readonly effectsToneMapUniform: WebGLUniformLocation;
   private readonly effectsFrameUniform: WebGLUniformLocation;
+  private readonly effectsSubjectCenterUniform: WebGLUniformLocation;
+  private readonly effectsSubjectBoxUniform: WebGLUniformLocation;
+  private readonly effectsSubjectStrengthUniform: WebGLUniformLocation;
 
   private readonly compositeOriginalUniform: WebGLUniformLocation;
   private readonly compositeProcessedUniform: WebGLUniformLocation;
@@ -352,6 +396,7 @@ export class WebGLImageRenderer {
   private readonly maxProcessPixels: number;
   private frameIndex = 0;
   private params: CameraParams = { ...DEFAULT_CAMERA_PARAMS };
+  private subjectContext: RendererSubjectContext = { ...DEFAULT_SUBJECT_CONTEXT };
   private lastHistogramUpdateMs = -Infinity;
 
   constructor(canvas: HTMLCanvasElement) {
@@ -391,6 +436,8 @@ export class WebGLImageRenderer {
     this.lensFocalLengthUniform = this.requireUniform(this.lensProgram, "uFocalLength");
     this.lensChromaUniform = this.requireUniform(this.lensProgram, "uChromaAberration");
     this.lensVignetteUniform = this.requireUniform(this.lensProgram, "uVignette");
+    this.lensSubjectCenterUniform = this.requireUniform(this.lensProgram, "uSubjectCenter");
+    this.lensSubjectStrengthUniform = this.requireUniform(this.lensProgram, "uSubjectStrength");
 
     this.effectsInputUniform = this.requireUniform(this.effectsProgram, "uInput");
     this.effectsResolutionUniform = this.requireUniform(this.effectsProgram, "uResolution");
@@ -408,6 +455,9 @@ export class WebGLImageRenderer {
     this.effectsNoiseReductionUniform = this.requireUniform(this.effectsProgram, "uNoiseReduction");
     this.effectsToneMapUniform = this.requireUniform(this.effectsProgram, "uToneMapEnabled");
     this.effectsFrameUniform = this.requireUniform(this.effectsProgram, "uFrame");
+    this.effectsSubjectCenterUniform = this.requireUniform(this.effectsProgram, "uSubjectCenter");
+    this.effectsSubjectBoxUniform = this.requireUniform(this.effectsProgram, "uSubjectBox");
+    this.effectsSubjectStrengthUniform = this.requireUniform(this.effectsProgram, "uSubjectStrength");
 
     this.compositeOriginalUniform = this.requireUniform(this.compositeProgram, "uOriginal");
     this.compositeProcessedUniform = this.requireUniform(this.compositeProgram, "uProcessed");
@@ -431,6 +481,32 @@ export class WebGLImageRenderer {
   setParams(params: Readonly<CameraParams>): void {
     this.params = { ...params };
     this.updateProcessSize();
+  }
+
+  setSubjectContext(context: RendererSubjectContext | null): void {
+    if (!context) {
+      this.subjectContext = { ...DEFAULT_SUBJECT_CONTEXT };
+      return;
+    }
+
+    const center = {
+      x: clampNumber(context.center.x, 0, 1),
+      y: clampNumber(context.center.y, 0, 1)
+    };
+    const box = {
+      x: clampNumber(context.box.x, 0, 1),
+      y: clampNumber(context.box.y, 0, 1),
+      width: clampNumber(context.box.width, 0.02, 1),
+      height: clampNumber(context.box.height, 0.02, 1)
+    };
+    box.width = Math.min(box.width, 1 - box.x);
+    box.height = Math.min(box.height, 1 - box.y);
+
+    this.subjectContext = {
+      center,
+      box,
+      strength: clampNumber(context.strength, 0, 1)
+    };
   }
 
   getHistogram(): HistogramData {
@@ -630,6 +706,12 @@ export class WebGLImageRenderer {
     this.gl.uniform1f(this.lensFocalLengthUniform, this.params.focalLength);
     this.gl.uniform1f(this.lensChromaUniform, this.params.chromaAberration);
     this.gl.uniform1f(this.lensVignetteUniform, this.params.vignette);
+    this.gl.uniform2f(
+      this.lensSubjectCenterUniform,
+      this.subjectContext.center.x,
+      this.subjectContext.center.y
+    );
+    this.gl.uniform1f(this.lensSubjectStrengthUniform, this.subjectContext.strength);
 
     this.gl.drawElements(this.gl.TRIANGLES, 6, this.gl.UNSIGNED_SHORT, 0);
 
@@ -672,6 +754,19 @@ export class WebGLImageRenderer {
     this.gl.uniform1f(this.effectsNoiseReductionUniform, this.params.noiseReduction);
     this.gl.uniform1f(this.effectsToneMapUniform, this.params.toneMap ? 1 : 0);
     this.gl.uniform1f(this.effectsFrameUniform, this.frameIndex);
+    this.gl.uniform2f(
+      this.effectsSubjectCenterUniform,
+      this.subjectContext.center.x,
+      this.subjectContext.center.y
+    );
+    this.gl.uniform4f(
+      this.effectsSubjectBoxUniform,
+      this.subjectContext.box.x,
+      this.subjectContext.box.y,
+      this.subjectContext.box.width,
+      this.subjectContext.box.height
+    );
+    this.gl.uniform1f(this.effectsSubjectStrengthUniform, this.subjectContext.strength);
 
     this.gl.drawElements(this.gl.TRIANGLES, 6, this.gl.UNSIGNED_SHORT, 0);
 
