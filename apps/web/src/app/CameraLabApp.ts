@@ -201,6 +201,36 @@ export class CameraLabApp {
     this.disableWebcam();
   };
 
+  private readonly onKeyDown = (event: KeyboardEvent) => {
+    if (event.defaultPrevented || isEditableTarget(event.target)) {
+      return;
+    }
+
+    const state = this.params.getState();
+
+    if (event.code === "Space") {
+      event.preventDefault();
+      this.params.set("previewMode", state.previewMode === "original" ? "processed" : "original");
+      this.elements?.status && (this.elements.status.textContent = "Toggled A/B preview.");
+      return;
+    }
+
+    if (event.code === "KeyS") {
+      event.preventDefault();
+      this.params.set("previewMode", state.previewMode === "split" ? "processed" : "split");
+      this.elements?.status &&
+        (this.elements.status.textContent =
+          state.previewMode === "split" ? "Split preview off." : "Split preview on.");
+      return;
+    }
+
+    if (event.code === "KeyR") {
+      event.preventDefault();
+      this.params.reset();
+      this.elements?.status && (this.elements.status.textContent = "Reset to default parameters.");
+    }
+  };
+
   constructor(root: HTMLElement) {
     this.root = root;
   }
@@ -211,7 +241,7 @@ export class CameraLabApp {
         <aside class="control-panel">
           <h1>CameraLab Web MVP</h1>
           <p class="lead">
-            T7 implementation: multipass preview with controls and RGB histogram.
+            T8 implementation: multipass preview with controls, histogram, and shortcuts.
           </p>
 
           <section class="control-block">
@@ -255,6 +285,7 @@ export class CameraLabApp {
               <span>Tone Mapping</span>
               <input id="tone-map-toggle" type="checkbox" checked />
             </label>
+            <p class="hint">Shortcuts: <code>Space</code> A/B, <code>S</code> Split, <code>R</code> Reset</p>
           </section>
 
           <section class="control-block param-section">
@@ -303,6 +334,7 @@ export class CameraLabApp {
     window.addEventListener("dragover", this.blockWindowDrop);
     window.addEventListener("drop", this.blockWindowDrop);
     window.addEventListener("pagehide", this.onPageHide);
+    window.addEventListener("keydown", this.onKeyDown);
 
     this.renderer.resize();
     this.refreshEmptyState();
@@ -802,4 +834,18 @@ export class CameraLabApp {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  const tag = target.tagName;
+  return (
+    tag === "INPUT" ||
+    tag === "TEXTAREA" ||
+    tag === "SELECT" ||
+    target.isContentEditable
+  );
 }

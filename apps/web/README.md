@@ -1,4 +1,4 @@
-# CameraLab Web MVP (`T0-T7`)
+# CameraLab Web MVP (`T0-T8`)
 
 This folder contains the initial web MVP with:
 
@@ -14,10 +14,11 @@ This folder contains the initial web MVP with:
 - Preview modes: A / B / Split + split slider
 - Multi-pass WebGL pipeline (`input -> lens -> effects -> composite`)
 - RGB histogram panel (CPU readback, ~200ms interval)
+- Keyboard shortcuts: `Space` (A/B), `S` (split), `R` (reset)
 
 Not included yet:
 
-- Keyboard shortcuts polish
+- Additional UI polish and camera-body styling
 
 ## Run
 
