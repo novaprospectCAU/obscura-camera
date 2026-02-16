@@ -1,4 +1,5 @@
 export type PreviewMode = "original" | "processed" | "split";
+export type HistogramMode = "original" | "processed" | "composite";
 
 export type CameraParams = {
   exposureEV: number;
@@ -13,6 +14,7 @@ export type CameraParams = {
   toneMap: boolean;
   previewMode: PreviewMode;
   splitPosition: number;
+  histogramMode: HistogramMode;
 };
 
 export const DEFAULT_CAMERA_PARAMS: CameraParams = {
@@ -27,7 +29,8 @@ export const DEFAULT_CAMERA_PARAMS: CameraParams = {
   chromaAberration: 0,
   toneMap: false,
   previewMode: "processed",
-  splitPosition: 0.5
+  splitPosition: 0.5,
+  histogramMode: "composite"
 };
 
 export type CameraPresetName = "Portrait" | "Landscape" | "Night";

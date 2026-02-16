@@ -3,7 +3,8 @@ import {
   CameraParamStore,
   DEFAULT_CAMERA_PARAMS,
   type CameraParams,
-  type CameraPresetName
+  type CameraPresetName,
+  type HistogramMode
 } from "./state";
 import { type HistogramData, WebGLImageRenderer } from "./gl/WebGLImageRenderer";
 
@@ -18,6 +19,20 @@ type NumericParamKey =
   | "distortion"
   | "vignette"
   | "chromaAberration";
+
+type PresetPatch = Pick<
+  CameraParams,
+  | "exposureEV"
+  | "shutter"
+  | "iso"
+  | "aperture"
+  | "focalLength"
+  | "focusDistance"
+  | "distortion"
+  | "vignette"
+  | "chromaAberration"
+  | "toneMap"
+>;
 
 type SliderControlDef = {
   key: NumericParamKey;
@@ -39,11 +54,15 @@ type SliderBinding = {
 type AppElements = {
   canvas: HTMLCanvasElement;
   fileInput: HTMLInputElement;
+  snapshotButton: HTMLButtonElement;
   imageSourceButton: HTMLButtonElement;
   webcamSourceButton: HTMLButtonElement;
   presetSelect: HTMLSelectElement;
   presetApplyButton: HTMLButtonElement;
   presetResetButton: HTMLButtonElement;
+  presetNameInput: HTMLInputElement;
+  presetSaveButton: HTMLButtonElement;
+  presetDeleteButton: HTMLButtonElement;
   previewOriginalButton: HTMLButtonElement;
   previewProcessedButton: HTMLButtonElement;
   previewSplitButton: HTMLButtonElement;
@@ -51,6 +70,7 @@ type AppElements = {
   splitSlider: HTMLInputElement;
   splitReadout: HTMLOutputElement;
   toneMapToggle: HTMLInputElement;
+  histogramModeSelect: HTMLSelectElement;
   paramControls: HTMLElement;
   histogramCanvas: HTMLCanvasElement;
   fileName: HTMLElement;
@@ -59,6 +79,9 @@ type AppElements = {
   emptyState: HTMLElement;
 };
 
+const SESSION_STORAGE_KEY = "obscura.session.v1";
+const CUSTOM_PRESETS_STORAGE_KEY = "obscura.custom-presets.v1";
+const BUILTIN_PRESET_NAMES: readonly CameraPresetName[] = ["Portrait", "Landscape", "Night"];
 const IDENTITY = (value: number): number => value;
 const SHUTTER_MIN = 1 / 8000;
 const SHUTTER_MAX = 1 / 15;
@@ -190,6 +213,7 @@ export class CameraLabApp {
   private sourceSwitchToken = 0;
   private unsubscribeParams?: () => void;
   private lastHistogramVersion = -1;
+  private customPresets: Record<string, PresetPatch> = {};
 
   private readonly onResize = () => {
     this.renderer?.resize();
@@ -213,23 +237,28 @@ export class CameraLabApp {
     if (event.code === "Space") {
       event.preventDefault();
       this.params.set("previewMode", state.previewMode === "original" ? "processed" : "original");
-      this.elements?.status && (this.elements.status.textContent = "Toggled A/B preview.");
+      if (this.elements) {
+        this.elements.status.textContent = "Toggled A/B preview.";
+      }
       return;
     }
 
     if (event.code === "KeyS") {
       event.preventDefault();
       this.params.set("previewMode", state.previewMode === "split" ? "processed" : "split");
-      this.elements?.status &&
-        (this.elements.status.textContent =
-          state.previewMode === "split" ? "Split preview off." : "Split preview on.");
+      if (this.elements) {
+        this.elements.status.textContent =
+          state.previewMode === "split" ? "Split preview off." : "Split preview on.";
+      }
       return;
     }
 
     if (event.code === "KeyR") {
       event.preventDefault();
       this.params.reset();
-      this.elements?.status && (this.elements.status.textContent = "Reset to default parameters.");
+      if (this.elements) {
+        this.elements.status.textContent = "Reset to default parameters.";
+      }
     }
   };
 
@@ -243,7 +272,7 @@ export class CameraLabApp {
         <aside class="control-panel">
           <h1>CameraLab Web MVP</h1>
           <p class="lead">
-            T8 implementation: multipass preview with controls, histogram, and shortcuts.
+            T8+ implementation: snapshot, custom presets, histogram modes, and session restore.
           </p>
 
           <section class="control-block">
@@ -252,7 +281,9 @@ export class CameraLabApp {
               <button id="source-image" class="source-button is-active" type="button">Image</button>
               <button id="source-webcam" class="source-button" type="button">Webcam</button>
             </div>
-
+            <div class="source-actions">
+              <button id="snapshot-button" class="mini-button" type="button">Save PNG</button>
+            </div>
             <label class="file-button" for="file-input">Choose Image</label>
             <input id="file-input" type="file" accept="image/*" />
             <p class="hint">You can also drag and drop an image file onto the preview area.</p>
@@ -261,13 +292,14 @@ export class CameraLabApp {
           <section class="control-block">
             <p class="control-title">Presets</p>
             <div class="preset-row">
-              <select id="preset-select">
-                <option value="Portrait">Portrait</option>
-                <option value="Landscape">Landscape</option>
-                <option value="Night">Night</option>
-              </select>
+              <select id="preset-select"></select>
               <button id="preset-apply" class="mini-button" type="button">Apply</button>
               <button id="preset-reset" class="mini-button is-muted" type="button">Reset</button>
+            </div>
+            <div class="preset-custom-row">
+              <input id="preset-name-input" type="text" placeholder="Custom preset name" />
+              <button id="preset-save" class="mini-button" type="button">Save Current</button>
+              <button id="preset-delete" class="mini-button is-muted" type="button">Delete</button>
             </div>
           </section>
 
@@ -285,7 +317,7 @@ export class CameraLabApp {
             </label>
             <label class="tone-map-row" for="tone-map-toggle">
               <span>Tone Mapping</span>
-              <input id="tone-map-toggle" type="checkbox" checked />
+              <input id="tone-map-toggle" type="checkbox" />
             </label>
             <p class="hint">Shortcuts: <code>Space</code> A/B, <code>S</code> Split, <code>R</code> Reset</p>
           </section>
@@ -297,6 +329,14 @@ export class CameraLabApp {
 
           <section class="control-block">
             <p class="control-title">Histogram</p>
+            <label class="histogram-mode-row" for="histogram-mode-select">
+              <span>Mode</span>
+              <select id="histogram-mode-select">
+                <option value="original">Original</option>
+                <option value="processed">Processed</option>
+                <option value="composite">Composite</option>
+              </select>
+            </label>
             <canvas id="histogram-canvas" class="histogram-canvas" width="320" height="120"></canvas>
           </section>
 
@@ -313,18 +353,23 @@ export class CameraLabApp {
 
     this.elements = this.collectElements();
     this.renderer = new WebGLImageRenderer(this.elements.canvas);
-
     this.createParameterControls();
     this.bindFileInput();
     this.bindDragAndDrop();
     this.bindSourceButtons();
     this.bindPresetControls();
     this.bindPreviewControls();
+    this.bindSnapshotControl();
+
+    this.loadCustomPresets();
+    this.rebuildPresetSelect();
+    this.restoreSessionState();
 
     this.unsubscribeParams = this.params.subscribe((state) => {
       this.renderer?.setParams(state);
       this.syncParameterControls(state);
       this.syncPreviewControls(state);
+      this.persistSessionState(state);
 
       if (this.sourceMode !== "webcam" || !this.webcamVideo) {
         this.renderer?.render();
@@ -354,7 +399,6 @@ export class CameraLabApp {
     this.disableWebcam();
     this.unsubscribeParams?.();
     this.unsubscribeParams = undefined;
-
     this.renderer?.dispose();
     this.renderer = undefined;
     this.elements = undefined;
@@ -364,11 +408,15 @@ export class CameraLabApp {
     return {
       canvas: this.requireElement<HTMLCanvasElement>("#preview-canvas"),
       fileInput: this.requireElement<HTMLInputElement>("#file-input"),
+      snapshotButton: this.requireElement<HTMLButtonElement>("#snapshot-button"),
       imageSourceButton: this.requireElement<HTMLButtonElement>("#source-image"),
       webcamSourceButton: this.requireElement<HTMLButtonElement>("#source-webcam"),
       presetSelect: this.requireElement<HTMLSelectElement>("#preset-select"),
       presetApplyButton: this.requireElement<HTMLButtonElement>("#preset-apply"),
       presetResetButton: this.requireElement<HTMLButtonElement>("#preset-reset"),
+      presetNameInput: this.requireElement<HTMLInputElement>("#preset-name-input"),
+      presetSaveButton: this.requireElement<HTMLButtonElement>("#preset-save"),
+      presetDeleteButton: this.requireElement<HTMLButtonElement>("#preset-delete"),
       previewOriginalButton: this.requireElement<HTMLButtonElement>("#preview-original"),
       previewProcessedButton: this.requireElement<HTMLButtonElement>("#preview-processed"),
       previewSplitButton: this.requireElement<HTMLButtonElement>("#preview-split"),
@@ -376,6 +424,7 @@ export class CameraLabApp {
       splitSlider: this.requireElement<HTMLInputElement>("#split-slider"),
       splitReadout: this.requireElement<HTMLOutputElement>("#split-readout"),
       toneMapToggle: this.requireElement<HTMLInputElement>("#tone-map-toggle"),
+      histogramModeSelect: this.requireElement<HTMLSelectElement>("#histogram-mode-select"),
       paramControls: this.requireElement<HTMLElement>("#param-controls"),
       histogramCanvas: this.requireElement<HTMLCanvasElement>("#histogram-canvas"),
       fileName: this.requireElement<HTMLElement>("#file-name"),
@@ -454,8 +503,19 @@ export class CameraLabApp {
     this.elements.imageSourceButton.addEventListener("click", () => {
       void this.setSourceMode("image");
     });
+
     this.elements.webcamSourceButton.addEventListener("click", () => {
       void this.setSourceMode("webcam");
+    });
+  }
+
+  private bindSnapshotControl(): void {
+    if (!this.elements) {
+      return;
+    }
+
+    this.elements.snapshotButton.addEventListener("click", () => {
+      this.captureSnapshotPng();
     });
   }
 
@@ -464,21 +524,35 @@ export class CameraLabApp {
       return;
     }
 
-    const { presetApplyButton, presetResetButton, presetSelect, status } = this.elements;
+    const {
+      presetApplyButton,
+      presetResetButton,
+      presetSelect,
+      presetNameInput,
+      presetSaveButton,
+      presetDeleteButton
+    } = this.elements;
 
     presetSelect.addEventListener("change", () => {
-      const presetName = presetSelect.value as CameraPresetName;
-      this.applyPreset(presetName);
+      this.applyPresetSelection(presetSelect.value);
     });
 
     presetApplyButton.addEventListener("click", () => {
-      const presetName = presetSelect.value as CameraPresetName;
-      this.applyPreset(presetName);
+      this.applyPresetSelection(presetSelect.value);
     });
 
     presetResetButton.addEventListener("click", () => {
       this.params.reset();
-      status.textContent = "Reset to default parameters.";
+      this.setStatus("Reset to default parameters.");
+    });
+
+    presetSaveButton.addEventListener("click", () => {
+      const requestedName = presetNameInput.value.trim();
+      this.saveCurrentAsCustomPreset(requestedName);
+    });
+
+    presetDeleteButton.addEventListener("click", () => {
+      this.deleteSelectedCustomPreset();
     });
   }
 
@@ -492,7 +566,8 @@ export class CameraLabApp {
       previewProcessedButton,
       previewSplitButton,
       splitSlider,
-      toneMapToggle
+      toneMapToggle,
+      histogramModeSelect
     } = this.elements;
 
     previewOriginalButton.addEventListener("click", () => {
@@ -509,6 +584,9 @@ export class CameraLabApp {
     });
     toneMapToggle.addEventListener("change", () => {
       this.params.set("toneMap", Boolean(toneMapToggle.checked));
+    });
+    histogramModeSelect.addEventListener("change", () => {
+      this.params.set("histogramMode", histogramModeSelect.value as HistogramMode);
     });
   }
 
@@ -567,12 +645,11 @@ export class CameraLabApp {
       state.previewMode === "processed"
     );
     this.elements.previewSplitButton.classList.toggle("is-active", state.previewMode === "split");
-
-    const splitPercent = Math.round(state.splitPosition * 100);
-    this.elements.splitReadout.textContent = `${splitPercent}%`;
+    this.elements.splitReadout.textContent = `${Math.round(state.splitPosition * 100)}%`;
     this.elements.splitSlider.value = `${state.splitPosition}`;
     this.elements.splitControl.classList.toggle("is-hidden", state.previewMode !== "split");
     this.elements.toneMapToggle.checked = state.toneMap;
+    this.elements.histogramModeSelect.value = state.histogramMode;
   }
 
   private async loadIntoRenderer(file: File): Promise<void> {
@@ -581,11 +658,11 @@ export class CameraLabApp {
     }
 
     if (!file.type.startsWith("image/")) {
-      this.elements.status.textContent = "Only image files are supported.";
+      this.setStatus("Only image files are supported.");
       return;
     }
 
-    this.elements.status.textContent = "Loading image...";
+    this.setStatus("Loading image...");
 
     try {
       const image = await this.loadImageFile(file);
@@ -601,11 +678,11 @@ export class CameraLabApp {
 
       this.hasImage = true;
       this.elements.fileName.textContent = file.name;
-      this.elements.status.textContent = `Loaded ${file.name}`;
+      this.setStatus(`Loaded ${file.name}`);
       this.refreshEmptyState();
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown loading error.";
-      this.elements.status.textContent = `Failed to load image: ${message}`;
+      this.setStatus(`Failed to load image: ${message}`);
     }
   }
 
@@ -622,9 +699,7 @@ export class CameraLabApp {
       this.refreshEmptyState();
       this.renderer.render();
       this.drawHistogram();
-      this.elements.status.textContent = this.hasImage
-        ? "Showing uploaded image."
-        : "Waiting for image input.";
+      this.setStatus(this.hasImage ? "Showing uploaded image." : "Waiting for image input.");
       return;
     }
 
@@ -632,7 +707,7 @@ export class CameraLabApp {
     const switchToken = ++this.sourceSwitchToken;
     this.updateSourceButtons();
     this.refreshEmptyState();
-    this.elements.status.textContent = "Requesting webcam permission...";
+    this.setStatus("Requesting webcam permission...");
 
     try {
       await this.startWebcam();
@@ -641,7 +716,7 @@ export class CameraLabApp {
         return;
       }
 
-      this.elements.status.textContent = "Webcam active.";
+      this.setStatus("Webcam active.");
       this.refreshEmptyState();
       this.startWebcamRenderLoop();
     } catch (error) {
@@ -655,7 +730,7 @@ export class CameraLabApp {
       this.refreshEmptyState();
 
       const message = error instanceof Error ? error.message : "Failed to start webcam.";
-      this.elements.status.textContent = `Webcam unavailable: ${message}`;
+      this.setStatus(`Webcam unavailable: ${message}`);
     }
   }
 
@@ -797,21 +872,6 @@ export class CameraLabApp {
     this.renderHistogramCanvas(ctx, canvas, histogram);
   }
 
-  private applyPreset(presetName: CameraPresetName): void {
-    if (!this.elements) {
-      return;
-    }
-
-    const preset = CAMERA_PRESETS[presetName];
-    if (!preset) {
-      this.elements.status.textContent = `Preset not found: ${presetName}`;
-      return;
-    }
-
-    this.params.patch(preset);
-    this.elements.status.textContent = `Applied ${presetName} preset.`;
-  }
-
   private renderHistogramCanvas(
     ctx: CanvasRenderingContext2D,
     canvas: HTMLCanvasElement,
@@ -845,6 +905,224 @@ export class CameraLabApp {
     drawChannel(histogram.b, "rgba(92, 148, 255, 0.30)");
   }
 
+  private captureSnapshotPng(): void {
+    if (!this.elements) {
+      return;
+    }
+
+    const canvas = this.elements.canvas;
+    const filename = `obscura-shot-${new Date().toISOString().replace(/[:.]/g, "-")}.png`;
+    const triggerDownload = (url: string) => {
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    };
+
+    if (canvas.toBlob) {
+      canvas.toBlob((blob) => {
+        if (!blob) {
+          this.setStatus("Failed to capture snapshot.");
+          return;
+        }
+
+        const blobUrl = URL.createObjectURL(blob);
+        triggerDownload(blobUrl);
+        this.setStatus(`Saved snapshot: ${filename}`);
+      }, "image/png");
+      return;
+    }
+
+    const dataUrl = canvas.toDataURL("image/png");
+    const link = document.createElement("a");
+    link.href = dataUrl;
+    link.download = filename;
+    link.click();
+    this.setStatus(`Saved snapshot: ${filename}`);
+  }
+
+  private applyPresetSelection(selection: string): void {
+    const parsed = this.parsePresetSelection(selection);
+    if (!parsed) {
+      this.setStatus("Invalid preset selection.");
+      return;
+    }
+
+    if (parsed.kind === "builtin") {
+      const preset = CAMERA_PRESETS[parsed.name];
+      this.params.patch(preset);
+      if (this.elements) {
+        this.elements.presetNameInput.value = "";
+      }
+      this.setStatus(`Applied ${parsed.name} preset.`);
+      return;
+    }
+
+    const preset = this.customPresets[parsed.name];
+    if (!preset) {
+      this.setStatus(`Custom preset not found: ${parsed.name}`);
+      return;
+    }
+
+    this.params.patch(preset);
+    if (this.elements) {
+      this.elements.presetNameInput.value = parsed.name;
+    }
+    this.setStatus(`Applied custom preset: ${parsed.name}`);
+  }
+
+  private saveCurrentAsCustomPreset(requestedName: string): void {
+    if (!this.elements) {
+      return;
+    }
+
+    const currentSelection = this.parsePresetSelection(this.elements.presetSelect.value);
+    const fallbackName =
+      currentSelection && currentSelection.kind === "custom" ? currentSelection.name : "";
+    const finalName = requestedName || fallbackName;
+
+    if (!finalName) {
+      this.setStatus("Enter a custom preset name to save.");
+      return;
+    }
+
+    this.customPresets[finalName] = extractPresetPatch(this.params.getState());
+    this.persistCustomPresets();
+    this.rebuildPresetSelect(`custom:${finalName}`);
+    this.elements.presetNameInput.value = finalName;
+    this.setStatus(`Saved custom preset: ${finalName}`);
+  }
+
+  private deleteSelectedCustomPreset(): void {
+    if (!this.elements) {
+      return;
+    }
+
+    const selected = this.parsePresetSelection(this.elements.presetSelect.value);
+    const fromInput = this.elements.presetNameInput.value.trim();
+    const targetName = selected && selected.kind === "custom" ? selected.name : fromInput;
+
+    if (!targetName) {
+      this.setStatus("Select or enter a custom preset to delete.");
+      return;
+    }
+
+    if (!(targetName in this.customPresets)) {
+      this.setStatus(`Custom preset not found: ${targetName}`);
+      return;
+    }
+
+    delete this.customPresets[targetName];
+    this.persistCustomPresets();
+    this.rebuildPresetSelect();
+    this.elements.presetNameInput.value = "";
+    this.setStatus(`Deleted custom preset: ${targetName}`);
+  }
+
+  private rebuildPresetSelect(preferredSelection?: string): void {
+    if (!this.elements) {
+      return;
+    }
+
+    const select = this.elements.presetSelect;
+    const previousValue = preferredSelection ?? select.value;
+    select.innerHTML = "";
+
+    const builtinGroup = document.createElement("optgroup");
+    builtinGroup.label = "Built-in";
+    for (const name of BUILTIN_PRESET_NAMES) {
+      const option = document.createElement("option");
+      option.value = `builtin:${name}`;
+      option.textContent = name;
+      builtinGroup.append(option);
+    }
+    select.append(builtinGroup);
+
+    const customNames = Object.keys(this.customPresets).sort((a, b) => a.localeCompare(b));
+    if (customNames.length > 0) {
+      const customGroup = document.createElement("optgroup");
+      customGroup.label = "Custom";
+      for (const name of customNames) {
+        const option = document.createElement("option");
+        option.value = `custom:${name}`;
+        option.textContent = name;
+        customGroup.append(option);
+      }
+      select.append(customGroup);
+    }
+
+    const hasPrevious = [...select.options].some((option) => option.value === previousValue);
+    select.value = hasPrevious ? previousValue : "builtin:Portrait";
+  }
+
+  private parsePresetSelection(
+    selection: string
+  ): { kind: "builtin"; name: CameraPresetName } | { kind: "custom"; name: string } | null {
+    if (selection.startsWith("builtin:")) {
+      const name = selection.slice("builtin:".length) as CameraPresetName;
+      return BUILTIN_PRESET_NAMES.includes(name) ? { kind: "builtin", name } : null;
+    }
+
+    if (selection.startsWith("custom:")) {
+      const name = selection.slice("custom:".length);
+      return name ? { kind: "custom", name } : null;
+    }
+
+    return null;
+  }
+
+  private loadCustomPresets(): void {
+    const raw = readStorage(CUSTOM_PRESETS_STORAGE_KEY);
+    if (!raw) {
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (!parsed || typeof parsed !== "object") {
+        return;
+      }
+
+      const next: Record<string, PresetPatch> = {};
+      for (const [name, patchValue] of Object.entries(parsed as Record<string, unknown>)) {
+        const patch = toPresetPatch(patchValue);
+        if (name && patch) {
+          next[name] = patch;
+        }
+      }
+
+      this.customPresets = next;
+    } catch {
+      this.customPresets = {};
+    }
+  }
+
+  private persistCustomPresets(): void {
+    writeStorage(CUSTOM_PRESETS_STORAGE_KEY, JSON.stringify(this.customPresets));
+  }
+
+  private restoreSessionState(): void {
+    const raw = readStorage(SESSION_STORAGE_KEY);
+    if (!raw) {
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      const patch = toSessionPatch(parsed);
+      if (patch) {
+        this.params.patch(patch);
+      }
+    } catch {
+      // Ignore malformed storage payloads.
+    }
+  }
+
+  private persistSessionState(state: Readonly<CameraParams>): void {
+    writeStorage(SESSION_STORAGE_KEY, JSON.stringify(state));
+  }
+
   private loadImageFile(file: File): Promise<HTMLImageElement> {
     return new Promise((resolve, reject) => {
       const imageUrl = URL.createObjectURL(file);
@@ -864,6 +1142,12 @@ export class CameraLabApp {
     });
   }
 
+  private setStatus(message: string): void {
+    if (this.elements) {
+      this.elements.status.textContent = message;
+    }
+  }
+
   private requireElement<T extends Element>(selector: string): T {
     const node = this.root.querySelector(selector);
     if (!node) {
@@ -871,6 +1155,112 @@ export class CameraLabApp {
     }
 
     return node as T;
+  }
+}
+
+function extractPresetPatch(state: Readonly<CameraParams>): PresetPatch {
+  return {
+    exposureEV: state.exposureEV,
+    shutter: state.shutter,
+    iso: state.iso,
+    aperture: state.aperture,
+    focalLength: state.focalLength,
+    focusDistance: state.focusDistance,
+    distortion: state.distortion,
+    vignette: state.vignette,
+    chromaAberration: state.chromaAberration,
+    toneMap: state.toneMap
+  };
+}
+
+function toPresetPatch(value: unknown): PresetPatch | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const candidate = value as Partial<CameraParams>;
+  if (
+    !isFiniteNumber(candidate.exposureEV) ||
+    !isFiniteNumber(candidate.shutter) ||
+    !isFiniteNumber(candidate.iso) ||
+    !isFiniteNumber(candidate.aperture) ||
+    !isFiniteNumber(candidate.focalLength) ||
+    !isFiniteNumber(candidate.focusDistance) ||
+    !isFiniteNumber(candidate.distortion) ||
+    !isFiniteNumber(candidate.vignette) ||
+    !isFiniteNumber(candidate.chromaAberration) ||
+    typeof candidate.toneMap !== "boolean"
+  ) {
+    return null;
+  }
+
+  return {
+    exposureEV: candidate.exposureEV,
+    shutter: candidate.shutter,
+    iso: candidate.iso,
+    aperture: candidate.aperture,
+    focalLength: candidate.focalLength,
+    focusDistance: candidate.focusDistance,
+    distortion: candidate.distortion,
+    vignette: candidate.vignette,
+    chromaAberration: candidate.chromaAberration,
+    toneMap: candidate.toneMap
+  };
+}
+
+function toSessionPatch(value: unknown): Partial<CameraParams> | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const candidate = value as Partial<CameraParams>;
+  const patch: Partial<CameraParams> = {};
+  if (isFiniteNumber(candidate.exposureEV)) patch.exposureEV = candidate.exposureEV;
+  if (isFiniteNumber(candidate.shutter)) patch.shutter = candidate.shutter;
+  if (isFiniteNumber(candidate.iso)) patch.iso = candidate.iso;
+  if (isFiniteNumber(candidate.aperture)) patch.aperture = candidate.aperture;
+  if (isFiniteNumber(candidate.focalLength)) patch.focalLength = candidate.focalLength;
+  if (isFiniteNumber(candidate.focusDistance)) patch.focusDistance = candidate.focusDistance;
+  if (isFiniteNumber(candidate.distortion)) patch.distortion = candidate.distortion;
+  if (isFiniteNumber(candidate.vignette)) patch.vignette = candidate.vignette;
+  if (isFiniteNumber(candidate.chromaAberration)) patch.chromaAberration = candidate.chromaAberration;
+  if (typeof candidate.toneMap === "boolean") patch.toneMap = candidate.toneMap;
+  if (
+    candidate.previewMode === "original" ||
+    candidate.previewMode === "processed" ||
+    candidate.previewMode === "split"
+  ) {
+    patch.previewMode = candidate.previewMode;
+  }
+  if (isFiniteNumber(candidate.splitPosition)) patch.splitPosition = clamp(candidate.splitPosition, 0, 1);
+  if (
+    candidate.histogramMode === "original" ||
+    candidate.histogramMode === "processed" ||
+    candidate.histogramMode === "composite"
+  ) {
+    patch.histogramMode = candidate.histogramMode;
+  }
+
+  return Object.keys(patch).length > 0 ? patch : null;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function readStorage(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeStorage(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // Ignore storage write failures.
   }
 }
 
@@ -891,3 +1281,4 @@ function isEditableTarget(target: EventTarget | null): boolean {
     target.isContentEditable
   );
 }
+

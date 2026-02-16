@@ -15,6 +15,10 @@ This folder contains the initial web MVP with:
 - Multi-pass WebGL pipeline (`input -> lens -> effects -> composite`)
 - RGB histogram panel (CPU readback, ~200ms interval)
 - Keyboard shortcuts: `Space` (A/B), `S` (split), `R` (reset)
+- PNG snapshot export
+- Custom preset save/load (localStorage)
+- Histogram source mode selector (Original / Processed / Composite)
+- Session state restore on reload (localStorage)
 
 Not included yet:
 

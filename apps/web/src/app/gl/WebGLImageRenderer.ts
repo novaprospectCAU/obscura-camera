@@ -285,7 +285,8 @@ export class WebGLImageRenderer {
 
     const gl = canvas.getContext("webgl2", {
       alpha: false,
-      antialias: true
+      antialias: true,
+      preserveDrawingBuffer: true
     });
     if (!gl) {
       throw new Error("WebGL2 is unavailable in this browser.");
@@ -532,7 +533,13 @@ export class WebGLImageRenderer {
 
     this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, this.histogramFramebuffer);
     this.gl.viewport(0, 0, HISTOGRAM_SIZE, HISTOGRAM_SIZE);
-    this.drawComposite(HISTOGRAM_SIZE, HISTOGRAM_SIZE, this.canvas.width, this.canvas.height);
+    this.drawComposite(
+      HISTOGRAM_SIZE,
+      HISTOGRAM_SIZE,
+      this.canvas.width,
+      this.canvas.height,
+      this.histogramPreviewMode()
+    );
     this.gl.readPixels(
       0,
       0,
@@ -552,7 +559,8 @@ export class WebGLImageRenderer {
     viewportWidth: number,
     viewportHeight: number,
     canvasWidthForUniform: number,
-    canvasHeightForUniform: number
+    canvasHeightForUniform: number,
+    previewModeOverride?: PreviewMode
   ): void {
     const processed = this.pingPong.getA();
 
@@ -571,7 +579,7 @@ export class WebGLImageRenderer {
     this.gl.uniform2f(this.compositeCanvasSizeUniform, canvasWidthForUniform, canvasHeightForUniform);
     this.gl.uniform1f(
       this.compositePreviewModeUniform,
-      this.previewModeToUniform(this.params.previewMode)
+      this.previewModeToUniform(previewModeOverride ?? this.params.previewMode)
     );
     this.gl.uniform1f(this.compositeSplitPositionUniform, this.params.splitPosition);
 
@@ -583,6 +591,16 @@ export class WebGLImageRenderer {
     this.gl.bindVertexArray(null);
     this.gl.useProgram(null);
     this.gl.viewport(0, 0, viewportWidth, viewportHeight);
+  }
+
+  private histogramPreviewMode(): PreviewMode {
+    if (this.params.histogramMode === "original") {
+      return "original";
+    }
+    if (this.params.histogramMode === "processed") {
+      return "processed";
+    }
+    return this.params.previewMode;
   }
 
   private buildHistogramBins(): void {

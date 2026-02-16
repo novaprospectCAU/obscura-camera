@@ -88,6 +88,11 @@ body {
   grid-template-columns: 1fr 1fr;
 }
 
+.source-actions {
+  display: flex;
+  gap: 0.45rem;
+}
+
 .source-button,
 .preview-button,
 .mini-button {
@@ -145,7 +150,21 @@ body {
   gap: 0.45rem;
 }
 
+.preset-custom-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 0.45rem;
+}
+
 .preset-row select {
+  border: 1px solid var(--panel-border);
+  background: #10151d;
+  color: var(--text);
+  border-radius: 0.45rem;
+  padding: 0.45rem 0.5rem;
+}
+
+.preset-custom-row input {
   border: 1px solid var(--panel-border);
   background: #10151d;
   color: var(--text);
@@ -231,6 +250,26 @@ body {
   border: 1px solid var(--panel-border);
   border-radius: 0.45rem;
   background: #0f141c;
+}
+
+.histogram-mode-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.histogram-mode-row span {
+  color: var(--muted);
+  font-size: 0.83rem;
+}
+
+.histogram-mode-row select {
+  border: 1px solid var(--panel-border);
+  background: #10151d;
+  color: var(--text);
+  border-radius: 0.45rem;
+  padding: 0.45rem 0.5rem;
 }
 
 .file-name,
