@@ -10,6 +10,8 @@ export type CameraParams = {
   aperture: number;
   focalLength: number;
   focusDistance: number;
+  lensShiftX: number;
+  lensShiftY: number;
   distortion: number;
   vignette: number;
   chromaAberration: number;
@@ -35,6 +37,8 @@ export const DEFAULT_CAMERA_PARAMS: CameraParams = {
   aperture: 1.4,
   focalLength: 18,
   focusDistance: 4,
+  lensShiftX: 0,
+  lensShiftY: 0,
   distortion: 0,
   vignette: 0,
   chromaAberration: 0,

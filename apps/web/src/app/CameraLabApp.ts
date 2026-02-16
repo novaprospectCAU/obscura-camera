@@ -20,6 +20,8 @@ type NumericParamKey =
   | "aperture"
   | "focalLength"
   | "focusDistance"
+  | "lensShiftX"
+  | "lensShiftY"
   | "distortion"
   | "vignette"
   | "chromaAberration"
@@ -38,6 +40,8 @@ type PresetPatch = Pick<
   | "aperture"
   | "focalLength"
   | "focusDistance"
+  | "lensShiftX"
+  | "lensShiftY"
   | "distortion"
   | "vignette"
   | "chromaAberration"
@@ -161,6 +165,8 @@ const PARAM_VALUE_LIMITS: Record<NumericParamKey, { min: number; max: number }> 
   aperture: { min: 1.4, max: 22 },
   focalLength: { min: 18, max: 120 },
   focusDistance: { min: 0.2, max: 50 },
+  lensShiftX: { min: -0.35, max: 0.35 },
+  lensShiftY: { min: -0.35, max: 0.35 },
   distortion: { min: -0.5, max: 0.5 },
   vignette: { min: 0, max: 1 },
   chromaAberration: { min: 0, max: 1 },
@@ -252,6 +258,26 @@ const PARAM_SLIDER_DEFS: SliderControlDef[] = [
     toValue: IDENTITY,
     toRaw: IDENTITY,
     format: (value) => `${value.toFixed(1)}m`
+  },
+  {
+    key: "lensShiftX",
+    label: "Lens Shift X",
+    min: -0.35,
+    max: 0.35,
+    step: 0.001,
+    toValue: IDENTITY,
+    toRaw: IDENTITY,
+    format: (value) => formatSigned(value, 3)
+  },
+  {
+    key: "lensShiftY",
+    label: "Lens Shift Y",
+    min: -0.35,
+    max: 0.35,
+    step: 0.001,
+    toValue: IDENTITY,
+    toRaw: IDENTITY,
+    format: (value) => formatSigned(value, 3)
   },
   {
     key: "distortion",
@@ -352,6 +378,8 @@ const PARAM_DIAL_VALUES: Record<NumericParamKey, readonly number[]> = {
   aperture: [1.4, 2, 2.8, 4, 5.6, 8, 11, 16, 22],
   focalLength: [18, 24, 28, 35, 50, 70, 85, 105, 120],
   focusDistance: [0.2, 0.3, 0.5, 0.8, 1.2, 1.6, 2.5, 4, 6, 10, 15, 25, 50],
+  lensShiftX: [-0.35, -0.25, -0.15, -0.08, 0, 0.08, 0.15, 0.25, 0.35],
+  lensShiftY: [-0.35, -0.25, -0.15, -0.08, 0, 0.08, 0.15, 0.25, 0.35],
   distortion: [-0.5, -0.3, -0.15, -0.05, 0, 0.05, 0.15, 0.3, 0.5],
   vignette: [0, 0.15, 0.3, 0.45, 0.6, 0.75, 0.9, 1],
   chromaAberration: [0, 0.05, 0.1, 0.2, 0.35, 0.5, 0.7, 1],
@@ -1947,6 +1975,8 @@ function extractPresetPatch(state: Readonly<CameraParams>): PresetPatch {
     aperture: state.aperture,
     focalLength: state.focalLength,
     focusDistance: state.focusDistance,
+    lensShiftX: state.lensShiftX,
+    lensShiftY: state.lensShiftY,
     distortion: state.distortion,
     vignette: state.vignette,
     chromaAberration: state.chromaAberration,
@@ -1986,6 +2016,8 @@ function toPresetPatch(value: unknown): PresetPatch | null {
   const tint = isFiniteNumber(candidate.tint) ? candidate.tint : 0;
   const contrast = isFiniteNumber(candidate.contrast) ? candidate.contrast : 1;
   const saturation = isFiniteNumber(candidate.saturation) ? candidate.saturation : 1;
+  const lensShiftX = isFiniteNumber(candidate.lensShiftX) ? candidate.lensShiftX : 0;
+  const lensShiftY = isFiniteNumber(candidate.lensShiftY) ? candidate.lensShiftY : 0;
   const sharpen = isFiniteNumber(candidate.sharpen) ? candidate.sharpen : DEFAULT_CAMERA_PARAMS.sharpen;
   const noiseReduction = isFiniteNumber(candidate.noiseReduction)
     ? candidate.noiseReduction
@@ -1999,6 +2031,8 @@ function toPresetPatch(value: unknown): PresetPatch | null {
     aperture: candidate.aperture,
     focalLength: candidate.focalLength,
     focusDistance: candidate.focusDistance,
+    lensShiftX: clamp(lensShiftX, -0.35, 0.35),
+    lensShiftY: clamp(lensShiftY, -0.35, 0.35),
     distortion: candidate.distortion,
     vignette: candidate.vignette,
     chromaAberration: candidate.chromaAberration,
@@ -2026,6 +2060,8 @@ function toSessionPatch(value: unknown): Partial<CameraParams> | null {
   if (isFiniteNumber(candidate.aperture)) patch.aperture = candidate.aperture;
   if (isFiniteNumber(candidate.focalLength)) patch.focalLength = candidate.focalLength;
   if (isFiniteNumber(candidate.focusDistance)) patch.focusDistance = candidate.focusDistance;
+  if (isFiniteNumber(candidate.lensShiftX)) patch.lensShiftX = clamp(candidate.lensShiftX, -0.35, 0.35);
+  if (isFiniteNumber(candidate.lensShiftY)) patch.lensShiftY = clamp(candidate.lensShiftY, -0.35, 0.35);
   if (isFiniteNumber(candidate.distortion)) patch.distortion = candidate.distortion;
   if (isFiniteNumber(candidate.vignette)) patch.vignette = candidate.vignette;
   if (isFiniteNumber(candidate.chromaAberration)) patch.chromaAberration = candidate.chromaAberration;
@@ -2203,6 +2239,8 @@ function isMeaningfulNumericChange(key: NumericParamKey, current: number, next: 
     aperture: 0.2,
     focalLength: 2,
     focusDistance: 0.35,
+    lensShiftX: 0.012,
+    lensShiftY: 0.012,
     distortion: 0.03,
     vignette: 0.03,
     chromaAberration: 0.03,
@@ -2482,6 +2520,8 @@ function enforceAiPatchSafety(
   if (!allowLens) {
     delete next.focalLength;
     delete next.focusDistance;
+    delete next.lensShiftX;
+    delete next.lensShiftY;
   }
 
   if (!allowDof) {
@@ -2792,10 +2832,10 @@ async function requestAiCameraPatch(
           "You are a camera look tuning assistant.",
           "Given the user's prompt and current camera state, produce clearly visible adjustments.",
           "Return valid JSON only with shape:",
-          '{"patch":{"exposureEV":number,"shutter":number,"iso":number,"aperture":number,"focalLength":number,"focusDistance":number,"distortion":number,"vignette":number,"chromaAberration":number,"temperature":number,"tint":number,"contrast":number,"saturation":number,"sharpen":number,"noiseReduction":number,"toneMap":boolean,"upscaleFactor":number,"upscaleStyle":"balanced"|"enhanced"},"summary":"short text"}',
+          '{"patch":{"exposureEV":number,"shutter":number,"iso":number,"aperture":number,"focalLength":number,"focusDistance":number,"lensShiftX":number,"lensShiftY":number,"distortion":number,"vignette":number,"chromaAberration":number,"temperature":number,"tint":number,"contrast":number,"saturation":number,"sharpen":number,"noiseReduction":number,"toneMap":boolean,"upscaleFactor":number,"upscaleStyle":"balanced"|"enhanced"},"summary":"short text"}',
           "Change at least 3 fields unless user asks for minimal change.",
           "Respect ranges:",
-          "exposureEV[-3..3], shutter[0.000125..0.066667], iso[100..6400], aperture[1.4..22], focalLength[18..120], focusDistance[0.2..50], distortion[-0.5..0.5], vignette[0..1], chromaAberration[0..1], temperature[-1..1], tint[-1..1], contrast[0.5..1.5], saturation[0..2], sharpen[0..1], noiseReduction[0..1], upscaleFactor in [1,1.5,2,2.5,3,3.5,4], upscaleStyle in [balanced,enhanced].",
+          "exposureEV[-3..3], shutter[0.000125..0.066667], iso[100..6400], aperture[1.4..22], focalLength[18..120], focusDistance[0.2..50], lensShiftX[-0.35..0.35], lensShiftY[-0.35..0.35], distortion[-0.5..0.5], vignette[0..1], chromaAberration[0..1], temperature[-1..1], tint[-1..1], contrast[0.5..1.5], saturation[0..2], sharpen[0..1], noiseReduction[0..1], upscaleFactor in [1,1.5,2,2.5,3,3.5,4], upscaleStyle in [balanced,enhanced].",
           "Use subjectContext to protect subject exposure and apparent focus.",
           "If subjectContext.brightness is high, avoid brightening aggressively.",
           "If subjectContext.backlit is true, prefer modest EV increase and tone mapping over extreme contrast jumps.",
@@ -2818,6 +2858,8 @@ async function requestAiCameraPatch(
             aperture: state.aperture,
             focalLength: state.focalLength,
             focusDistance: state.focusDistance,
+            lensShiftX: state.lensShiftX,
+            lensShiftY: state.lensShiftY,
             distortion: state.distortion,
             vignette: state.vignette,
             chromaAberration: state.chromaAberration,

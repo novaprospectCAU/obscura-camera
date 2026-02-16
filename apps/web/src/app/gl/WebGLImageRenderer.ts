@@ -69,6 +69,7 @@ uniform float uDistortion;
 uniform float uFocalLength;
 uniform float uChromaAberration;
 uniform float uVignette;
+uniform vec2 uLensShift;
 uniform vec2 uSubjectCenter;
 uniform float uSubjectStrength;
 
@@ -81,13 +82,14 @@ bool outsideUv(vec2 uv) {
 }
 
 vec2 applyLensUv(vec2 uv) {
-  vec2 centered = uv - 0.5;
+  vec2 lensCenter = clamp(vec2(0.5) + uLensShift, vec2(0.1), vec2(0.9));
+  vec2 centered = uv - lensCenter;
   float radius2 = dot(centered, centered);
   vec2 distortedUv = uv + centered * radius2 * (uDistortion * 0.7);
 
   float focalNorm = clamp((uFocalLength - 18.0) / (120.0 - 18.0), 0.0, 1.0);
   float zoom = mix(1.0, 2.2, focalNorm);
-  return (distortedUv - 0.5) / zoom + 0.5;
+  return (distortedUv - lensCenter) / zoom + lensCenter;
 }
 
 vec3 sampleWithChroma(vec2 uv) {
@@ -95,7 +97,8 @@ vec3 sampleWithChroma(vec2 uv) {
     return BG_COLOR;
   }
 
-  vec2 centerDir = normalize((uv - 0.5) + vec2(1e-5));
+  vec2 lensCenter = clamp(vec2(0.5) + uLensShift, vec2(0.1), vec2(0.9));
+  vec2 centerDir = normalize((uv - lensCenter) + vec2(1e-5));
   vec2 caOffset = centerDir * uChromaAberration * 0.0035;
 
   float r = texture(uInput, clamp(uv + caOffset, 0.0, 1.0)).r;
@@ -112,7 +115,12 @@ void main() {
   }
 
   vec3 color = sampleWithChroma(lensUv);
-  vec2 vignetteCenter = mix(vec2(0.5), clamp(uSubjectCenter, 0.0, 1.0), clamp(uSubjectStrength, 0.0, 1.0));
+  vec2 lensCenter = clamp(vec2(0.5) + uLensShift, vec2(0.1), vec2(0.9));
+  vec2 vignetteCenter = mix(
+    lensCenter,
+    clamp(uSubjectCenter, 0.0, 1.0),
+    clamp(uSubjectStrength, 0.0, 1.0)
+  );
   float radius = length(lensUv - vignetteCenter) * 1.4142;
   float vignetteFactor = 1.0 - (uVignette * smoothstep(0.25, 1.0, radius));
 
@@ -348,6 +356,7 @@ export class WebGLImageRenderer {
   private readonly lensFocalLengthUniform: WebGLUniformLocation;
   private readonly lensChromaUniform: WebGLUniformLocation;
   private readonly lensVignetteUniform: WebGLUniformLocation;
+  private readonly lensShiftUniform: WebGLUniformLocation;
   private readonly lensSubjectCenterUniform: WebGLUniformLocation;
   private readonly lensSubjectStrengthUniform: WebGLUniformLocation;
 
@@ -436,6 +445,7 @@ export class WebGLImageRenderer {
     this.lensFocalLengthUniform = this.requireUniform(this.lensProgram, "uFocalLength");
     this.lensChromaUniform = this.requireUniform(this.lensProgram, "uChromaAberration");
     this.lensVignetteUniform = this.requireUniform(this.lensProgram, "uVignette");
+    this.lensShiftUniform = this.requireUniform(this.lensProgram, "uLensShift");
     this.lensSubjectCenterUniform = this.requireUniform(this.lensProgram, "uSubjectCenter");
     this.lensSubjectStrengthUniform = this.requireUniform(this.lensProgram, "uSubjectStrength");
 
@@ -706,6 +716,7 @@ export class WebGLImageRenderer {
     this.gl.uniform1f(this.lensFocalLengthUniform, this.params.focalLength);
     this.gl.uniform1f(this.lensChromaUniform, this.params.chromaAberration);
     this.gl.uniform1f(this.lensVignetteUniform, this.params.vignette);
+    this.gl.uniform2f(this.lensShiftUniform, this.params.lensShiftX, this.params.lensShiftY);
     this.gl.uniform2f(
       this.lensSubjectCenterUniform,
       this.subjectContext.center.x,
