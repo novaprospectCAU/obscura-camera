@@ -139,7 +139,7 @@ vec3 processColor(vec2 baseUv) {
 
   float isoNorm = clamp((uIso - 100.0) / (6400.0 - 100.0), 0.0, 1.0);
   float grain = hash12(gl_FragCoord.xy + vec2(uFrame * 0.173, uFrame * 0.319)) - 0.5;
-  linear += grain * (0.03 + isoNorm * 0.09) * (0.35 + linear);
+  linear += grain * (isoNorm * 0.12) * (0.35 + linear);
 
   if (uToneMapEnabled > 0.5) {
     linear = filmic(linear);
@@ -500,4 +500,3 @@ export class WebGLImageRenderer {
     return uniform;
   }
 }
-

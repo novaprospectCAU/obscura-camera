@@ -17,15 +17,15 @@ export type CameraParams = {
 
 export const DEFAULT_CAMERA_PARAMS: CameraParams = {
   exposureEV: 0,
-  shutter: 1 / 250,
+  shutter: 1 / 8000,
   iso: 100,
-  aperture: 5.6,
-  focalLength: 35,
+  aperture: 1.4,
+  focalLength: 18,
   focusDistance: 4,
   distortion: 0,
-  vignette: 0.25,
+  vignette: 0,
   chromaAberration: 0,
-  toneMap: true,
+  toneMap: false,
   previewMode: "processed",
   splitPosition: 0.5
 };
