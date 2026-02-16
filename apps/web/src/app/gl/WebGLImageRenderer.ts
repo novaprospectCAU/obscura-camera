@@ -1,6 +1,17 @@
 import { DEFAULT_CAMERA_PARAMS, type CameraParams, type PreviewMode } from "../state";
 import { PingPongFramebuffer } from "./PingPongFramebuffer";
 
+export type HistogramData = {
+  r: Float32Array;
+  g: Float32Array;
+  b: Float32Array;
+  maxBin: number;
+};
+
+const HISTOGRAM_BINS = 64;
+const HISTOGRAM_SIZE = 128;
+const HISTOGRAM_INTERVAL_MS = 200;
+
 const VERTEX_SHADER_SOURCE = `#version 300 es
 layout(location = 0) in vec2 aPosition;
 layout(location = 1) in vec2 aUv;
@@ -216,6 +227,20 @@ void main() {
 }
 `;
 
+const COPY_FRAGMENT_SOURCE = `#version 300 es
+precision highp float;
+
+in vec2 vUv;
+
+uniform sampler2D uSource;
+
+out vec4 outColor;
+
+void main() {
+  outColor = texture(uSource, vUv);
+}
+`;
+
 export class WebGLImageRenderer {
   private readonly canvas: HTMLCanvasElement;
   private readonly gl: WebGL2RenderingContext;
@@ -227,6 +252,7 @@ export class WebGLImageRenderer {
   private readonly lensProgram: WebGLProgram;
   private readonly effectsProgram: WebGLProgram;
   private readonly compositeProgram: WebGLProgram;
+  private readonly copyProgram: WebGLProgram;
 
   private readonly inputSourceUniform: WebGLUniformLocation;
   private readonly inputExposureUniform: WebGLUniformLocation;
@@ -253,10 +279,22 @@ export class WebGLImageRenderer {
   private readonly compositePreviewModeUniform: WebGLUniformLocation;
   private readonly compositeSplitPositionUniform: WebGLUniformLocation;
 
+  private readonly copySourceUniform: WebGLUniformLocation;
+  private readonly histogramFramebuffer: WebGLFramebuffer;
+  private readonly histogramTexture: WebGLTexture;
+  private readonly histogramPixels = new Uint8Array(HISTOGRAM_SIZE * HISTOGRAM_SIZE * 4);
+  private readonly histogram: HistogramData = {
+    r: new Float32Array(HISTOGRAM_BINS),
+    g: new Float32Array(HISTOGRAM_BINS),
+    b: new Float32Array(HISTOGRAM_BINS),
+    maxBin: 0
+  };
+
   private sourceWidth = 1;
   private sourceHeight = 1;
   private frameIndex = 0;
   private params: CameraParams = { ...DEFAULT_CAMERA_PARAMS };
+  private lastHistogramUpdateMs = -Infinity;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -278,6 +316,7 @@ export class WebGLImageRenderer {
     this.lensProgram = this.createProgram(VERTEX_SHADER_SOURCE, PASS_LENS_FRAGMENT_SOURCE);
     this.effectsProgram = this.createProgram(VERTEX_SHADER_SOURCE, PASS_EFFECTS_FRAGMENT_SOURCE);
     this.compositeProgram = this.createProgram(VERTEX_SHADER_SOURCE, COMPOSITE_FRAGMENT_SOURCE);
+    this.copyProgram = this.createProgram(VERTEX_SHADER_SOURCE, COPY_FRAGMENT_SOURCE);
 
     this.inputSourceUniform = this.requireUniform(this.inputProgram, "uSource");
     this.inputExposureUniform = this.requireUniform(this.inputProgram, "uExposureEV");
@@ -304,11 +343,26 @@ export class WebGLImageRenderer {
     this.compositePreviewModeUniform = this.requireUniform(this.compositeProgram, "uPreviewMode");
     this.compositeSplitPositionUniform = this.requireUniform(this.compositeProgram, "uSplitPosition");
 
+    this.copySourceUniform = this.requireUniform(this.copyProgram, "uSource");
+
+    const histogramFramebuffer = this.gl.createFramebuffer();
+    const histogramTexture = this.createTexture();
+    if (!histogramFramebuffer) {
+      throw new Error("Failed to create histogram framebuffer.");
+    }
+
+    this.histogramFramebuffer = histogramFramebuffer;
+    this.histogramTexture = histogramTexture;
+    this.allocateHistogramResources();
     this.initializeSourceTexture();
   }
 
   setParams(params: Readonly<CameraParams>): void {
     this.params = { ...params };
+  }
+
+  getHistogram(): HistogramData {
+    return this.histogram;
   }
 
   resize(): void {
@@ -385,6 +439,7 @@ export class WebGLImageRenderer {
     this.runLensPass();
     this.runEffectsPass();
     this.runCompositePass();
+    this.updateHistogramIfNeeded();
     this.frameIndex += 1;
   }
 
@@ -492,6 +547,97 @@ export class WebGLImageRenderer {
     this.gl.bindTexture(this.gl.TEXTURE_2D, null);
     this.gl.bindVertexArray(null);
     this.gl.useProgram(null);
+  }
+
+  private updateHistogramIfNeeded(): void {
+    const now = performance.now();
+    if (now - this.lastHistogramUpdateMs < HISTOGRAM_INTERVAL_MS) {
+      return;
+    }
+    this.lastHistogramUpdateMs = now;
+
+    const processedTexture = this.pingPong.getA().texture;
+    const sourceForHistogram =
+      this.params.previewMode === "original" ? this.sourceTexture : processedTexture;
+
+    this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, this.histogramFramebuffer);
+    this.gl.viewport(0, 0, HISTOGRAM_SIZE, HISTOGRAM_SIZE);
+    this.gl.useProgram(this.copyProgram);
+    this.gl.bindVertexArray(this.vao);
+
+    this.gl.activeTexture(this.gl.TEXTURE0);
+    this.gl.bindTexture(this.gl.TEXTURE_2D, sourceForHistogram);
+    this.gl.uniform1i(this.copySourceUniform, 0);
+
+    this.gl.drawElements(this.gl.TRIANGLES, 6, this.gl.UNSIGNED_SHORT, 0);
+    this.gl.readPixels(
+      0,
+      0,
+      HISTOGRAM_SIZE,
+      HISTOGRAM_SIZE,
+      this.gl.RGBA,
+      this.gl.UNSIGNED_BYTE,
+      this.histogramPixels
+    );
+
+    this.gl.bindTexture(this.gl.TEXTURE_2D, null);
+    this.gl.bindVertexArray(null);
+    this.gl.useProgram(null);
+    this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
+
+    this.buildHistogramBins();
+  }
+
+  private buildHistogramBins(): void {
+    this.histogram.r.fill(0);
+    this.histogram.g.fill(0);
+    this.histogram.b.fill(0);
+
+    const binsMinusOne = HISTOGRAM_BINS - 1;
+    const pixels = this.histogramPixels;
+
+    for (let i = 0; i < pixels.length; i += 4) {
+      const rBin = Math.min(binsMinusOne, (pixels[i] * HISTOGRAM_BINS) >> 8);
+      const gBin = Math.min(binsMinusOne, (pixels[i + 1] * HISTOGRAM_BINS) >> 8);
+      const bBin = Math.min(binsMinusOne, (pixels[i + 2] * HISTOGRAM_BINS) >> 8);
+      this.histogram.r[rBin] += 1;
+      this.histogram.g[gBin] += 1;
+      this.histogram.b[bBin] += 1;
+    }
+
+    let maxBin = 1;
+    for (let i = 0; i < HISTOGRAM_BINS; i += 1) {
+      maxBin = Math.max(maxBin, this.histogram.r[i], this.histogram.g[i], this.histogram.b[i]);
+    }
+
+    this.histogram.maxBin = maxBin;
+  }
+
+  private allocateHistogramResources(): void {
+    this.gl.bindTexture(this.gl.TEXTURE_2D, this.histogramTexture);
+    this.gl.texImage2D(
+      this.gl.TEXTURE_2D,
+      0,
+      this.gl.RGBA,
+      HISTOGRAM_SIZE,
+      HISTOGRAM_SIZE,
+      0,
+      this.gl.RGBA,
+      this.gl.UNSIGNED_BYTE,
+      null
+    );
+
+    this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, this.histogramFramebuffer);
+    this.gl.framebufferTexture2D(
+      this.gl.FRAMEBUFFER,
+      this.gl.COLOR_ATTACHMENT0,
+      this.gl.TEXTURE_2D,
+      this.histogramTexture,
+      0
+    );
+
+    this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
+    this.gl.bindTexture(this.gl.TEXTURE_2D, null);
   }
 
   private initializeSourceTexture(): void {

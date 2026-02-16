@@ -5,7 +5,7 @@ import {
   type CameraParams,
   type CameraPresetName
 } from "./state";
-import { WebGLImageRenderer } from "./gl/WebGLImageRenderer";
+import { type HistogramData, WebGLImageRenderer } from "./gl/WebGLImageRenderer";
 
 type SourceMode = "image" | "webcam";
 type NumericParamKey =
@@ -52,6 +52,7 @@ type AppElements = {
   splitReadout: HTMLOutputElement;
   toneMapToggle: HTMLInputElement;
   paramControls: HTMLElement;
+  histogramCanvas: HTMLCanvasElement;
   fileName: HTMLElement;
   status: HTMLElement;
   previewPanel: HTMLElement;
@@ -210,7 +211,7 @@ export class CameraLabApp {
         <aside class="control-panel">
           <h1>CameraLab Web MVP</h1>
           <p class="lead">
-            T4 implementation: source switch + parameter system + preview controls.
+            T7 implementation: multipass preview with controls and RGB histogram.
           </p>
 
           <section class="control-block">
@@ -261,6 +262,11 @@ export class CameraLabApp {
             <div id="param-controls" class="param-controls"></div>
           </section>
 
+          <section class="control-block">
+            <p class="control-title">Histogram</p>
+            <canvas id="histogram-canvas" class="histogram-canvas" width="320" height="120"></canvas>
+          </section>
+
           <p class="file-name" id="file-name">No image loaded</p>
           <p class="status" id="status">Waiting for image input.</p>
         </aside>
@@ -289,6 +295,7 @@ export class CameraLabApp {
 
       if (this.sourceMode !== "webcam" || !this.webcamVideo) {
         this.renderer?.render();
+        this.drawHistogram();
       }
     });
 
@@ -300,6 +307,7 @@ export class CameraLabApp {
     this.renderer.resize();
     this.refreshEmptyState();
     this.renderer.render();
+    this.drawHistogram();
   }
 
   private collectElements(): AppElements {
@@ -319,6 +327,7 @@ export class CameraLabApp {
       splitReadout: this.requireElement<HTMLOutputElement>("#split-readout"),
       toneMapToggle: this.requireElement<HTMLInputElement>("#tone-map-toggle"),
       paramControls: this.requireElement<HTMLElement>("#param-controls"),
+      histogramCanvas: this.requireElement<HTMLCanvasElement>("#histogram-canvas"),
       fileName: this.requireElement<HTMLElement>("#file-name"),
       status: this.requireElement<HTMLElement>("#status"),
       previewPanel: this.requireElement<HTMLElement>("#preview-panel"),
@@ -424,20 +433,28 @@ export class CameraLabApp {
       return;
     }
 
-    this.elements.previewOriginalButton.addEventListener("click", () => {
+    const {
+      previewOriginalButton,
+      previewProcessedButton,
+      previewSplitButton,
+      splitSlider,
+      toneMapToggle
+    } = this.elements;
+
+    previewOriginalButton.addEventListener("click", () => {
       this.params.set("previewMode", "original");
     });
-    this.elements.previewProcessedButton.addEventListener("click", () => {
+    previewProcessedButton.addEventListener("click", () => {
       this.params.set("previewMode", "processed");
     });
-    this.elements.previewSplitButton.addEventListener("click", () => {
+    previewSplitButton.addEventListener("click", () => {
       this.params.set("previewMode", "split");
     });
-    this.elements.splitSlider.addEventListener("input", () => {
-      this.params.set("splitPosition", clamp(Number(this.elements?.splitSlider.value ?? 0.5), 0, 1));
+    splitSlider.addEventListener("input", () => {
+      this.params.set("splitPosition", clamp(Number(splitSlider.value), 0, 1));
     });
-    this.elements.toneMapToggle.addEventListener("change", () => {
-      this.params.set("toneMap", Boolean(this.elements?.toneMapToggle.checked));
+    toneMapToggle.addEventListener("change", () => {
+      this.params.set("toneMap", Boolean(toneMapToggle.checked));
     });
   }
 
@@ -526,6 +543,7 @@ export class CameraLabApp {
 
       this.renderer.setImage(image);
       this.renderer.render();
+      this.drawHistogram();
 
       this.hasImage = true;
       this.elements.fileName.textContent = file.name;
@@ -549,6 +567,7 @@ export class CameraLabApp {
       this.updateSourceButtons();
       this.refreshEmptyState();
       this.renderer.render();
+      this.drawHistogram();
       this.elements.status.textContent = this.hasImage
         ? "Showing uploaded image."
         : "Waiting for image input.";
@@ -653,6 +672,7 @@ export class CameraLabApp {
 
       this.renderer.updateVideoFrame(this.webcamVideo);
       this.renderer.render();
+      this.drawHistogram();
       this.webcamFrameHandle = requestAnimationFrame(renderFrame);
     };
 
@@ -701,6 +721,54 @@ export class CameraLabApp {
       this.sourceMode === "webcam"
         ? "Starting webcam..."
         : 'Drop image here or use "Choose Image"';
+  }
+
+  private drawHistogram(): void {
+    if (!this.renderer || !this.elements) {
+      return;
+    }
+
+    const histogram = this.renderer.getHistogram();
+    const canvas = this.elements.histogramCanvas;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      return;
+    }
+
+    this.renderHistogramCanvas(ctx, canvas, histogram);
+  }
+
+  private renderHistogramCanvas(
+    ctx: CanvasRenderingContext2D,
+    canvas: HTMLCanvasElement,
+    histogram: HistogramData
+  ): void {
+    const { width, height } = canvas;
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = "#0f141c";
+    ctx.fillRect(0, 0, width, height);
+
+    const bins = histogram.r.length;
+    const binWidth = width / bins;
+    const maxValue = Math.max(1, histogram.maxBin);
+
+    const drawChannel = (channel: Float32Array, color: string) => {
+      ctx.beginPath();
+      ctx.moveTo(0, height);
+      for (let i = 0; i < bins; i += 1) {
+        const x = i * binWidth;
+        const y = height - (channel[i] / maxValue) * (height - 4);
+        ctx.lineTo(x, y);
+      }
+      ctx.lineTo(width, height);
+      ctx.closePath();
+      ctx.fillStyle = color;
+      ctx.fill();
+    };
+
+    drawChannel(histogram.r, "rgba(255, 84, 84, 0.38)");
+    drawChannel(histogram.g, "rgba(94, 235, 128, 0.32)");
+    drawChannel(histogram.b, "rgba(92, 148, 255, 0.30)");
   }
 
   private loadImageFile(file: File): Promise<HTMLImageElement> {
