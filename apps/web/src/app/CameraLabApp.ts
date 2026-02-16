@@ -64,15 +64,18 @@ type SliderBinding = {
   readout: HTMLOutputElement;
 };
 
-type ControlTheme = "sliders" | "camera";
+type DialKind = "standard" | "aperture" | "lens-zoom" | "lens-focus";
 
 type DialBinding = {
   def: SliderControlDef;
-  minusButton: HTMLButtonElement;
-  plusButton: HTMLButtonElement;
+  root: HTMLElement;
+  knob: HTMLElement;
   readout: HTMLOutputElement;
   values: readonly number[];
+  kind: DialKind;
 };
+
+type ControlTheme = "sliders" | "camera";
 
 type AppElements = {
   canvas: HTMLCanvasElement;
@@ -117,6 +120,9 @@ const IDENTITY = (value: number): number => value;
 const SHUTTER_MIN = 1 / 8000;
 const SHUTTER_MAX = 1 / 15;
 const SNAPSHOT_MAX_DIMENSION = 8192;
+const DIAL_MIN_ANGLE_DEG = -140;
+const DIAL_MAX_ANGLE_DEG = 140;
+const DIAL_SWEEP_DEG = DIAL_MAX_ANGLE_DEG - DIAL_MIN_ANGLE_DEG;
 
 const toShutterSeconds = (sliderValue: number): number =>
   SHUTTER_MIN * Math.pow(SHUTTER_MAX / SHUTTER_MIN, clamp(sliderValue, 0, 1));
@@ -654,6 +660,7 @@ export class CameraLabApp {
 
     for (const def of PARAM_SLIDER_DEFS) {
       const values = PARAM_DIAL_VALUES[def.key];
+      const kind = dialKindForKey(def.key);
       const row = document.createElement("div");
       row.className = "dial-row";
 
@@ -664,36 +671,57 @@ export class CameraLabApp {
       const controls = document.createElement("div");
       controls.className = "dial-controls";
 
-      const minusButton = document.createElement("button");
-      minusButton.type = "button";
-      minusButton.className = "dial-button";
-      minusButton.textContent = "-";
+      const dial = document.createElement("div");
+      dial.className = "dial-knob";
+      dial.tabIndex = 0;
+      dial.dataset.kind = kind;
+      dial.setAttribute("role", "slider");
+      dial.setAttribute("aria-label", def.label);
+
+      const ring = document.createElement("div");
+      ring.className = "dial-ring";
 
       const readout = document.createElement("output");
       readout.className = "dial-readout";
 
-      const plusButton = document.createElement("button");
-      plusButton.type = "button";
-      plusButton.className = "dial-button";
-      plusButton.textContent = "+";
+      const marker = document.createElement("div");
+      marker.className = "dial-marker";
 
-      controls.append(minusButton, readout, plusButton);
+      const center = document.createElement("div");
+      center.className = "dial-center";
+
+      if (kind === "aperture") {
+        const iris = document.createElement("div");
+        iris.className = "dial-aperture";
+        const hole = document.createElement("div");
+        hole.className = "dial-aperture-hole";
+        iris.append(hole);
+        center.append(iris);
+      } else if (kind === "lens-zoom" || kind === "lens-focus") {
+        const lens = document.createElement("div");
+        lens.className = "dial-lens";
+        const tube = document.createElement("div");
+        tube.className = "dial-lens-tube";
+        const glass = document.createElement("div");
+        glass.className = "dial-lens-glass";
+        lens.append(tube, glass);
+        center.append(lens);
+      }
+
+      dial.append(ring, center, marker);
+      controls.append(dial, readout);
       row.append(name, controls);
       this.elements.paramDialControls.append(row);
 
-      minusButton.addEventListener("click", () => {
-        this.stepDialValue(def.key, -1);
-      });
-      plusButton.addEventListener("click", () => {
-        this.stepDialValue(def.key, 1);
-      });
+      this.bindDialInput(dial, def.key, values);
 
       this.dialBindings.push({
         def,
-        minusButton,
-        plusButton,
+        root: dial,
+        knob: ring,
         readout,
-        values
+        values,
+        kind
       });
     }
   }
@@ -823,8 +851,9 @@ export class CameraLabApp {
       return;
     }
 
-    this.elements.controlThemeSelect.addEventListener("change", () => {
-      const nextTheme = parseControlTheme(this.elements?.controlThemeSelect.value);
+    const { controlThemeSelect } = this.elements;
+    controlThemeSelect.addEventListener("change", () => {
+      const nextTheme = parseControlTheme(controlThemeSelect.value);
       this.controlTheme = nextTheme;
       writeStorage(CONTROL_THEME_STORAGE_KEY, nextTheme);
       this.syncControlThemeView();
@@ -857,6 +886,58 @@ export class CameraLabApp {
     const currentIndex = findNearestValueIndex(values, state[key]);
     const nextIndex = clamp(currentIndex + delta, 0, values.length - 1);
     this.params.set(key, values[nextIndex]);
+  }
+
+  private bindDialInput(dial: HTMLElement, key: NumericParamKey, values: readonly number[]): void {
+    dial.addEventListener(
+      "wheel",
+      (event) => {
+        event.preventDefault();
+        this.stepDialValue(key, event.deltaY > 0 ? 1 : -1);
+      },
+      { passive: false }
+    );
+
+    dial.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowLeft" || event.key === "ArrowDown") {
+        event.preventDefault();
+        this.stepDialValue(key, -1);
+      } else if (event.key === "ArrowRight" || event.key === "ArrowUp") {
+        event.preventDefault();
+        this.stepDialValue(key, 1);
+      }
+    });
+
+    dial.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) {
+        return;
+      }
+      event.preventDefault();
+
+      dial.setPointerCapture(event.pointerId);
+      const initialState = this.params.getState();
+      const startIndex = findNearestValueIndex(values, initialState[key]);
+      const startAngle = pointerAngleFromEvent(event, dial);
+      const stepAngle = DIAL_SWEEP_DEG / Math.max(1, values.length - 1);
+
+      const onMove = (moveEvent: PointerEvent) => {
+        const currentAngle = pointerAngleFromEvent(moveEvent, dial);
+        const deltaAngle = shortestAngleDelta(startAngle, currentAngle);
+        const stepOffset = Math.round(deltaAngle / stepAngle);
+        const nextIndex = clamp(startIndex + stepOffset, 0, values.length - 1);
+        this.params.set(key, values[nextIndex]);
+      };
+
+      const finish = () => {
+        dial.removeEventListener("pointermove", onMove);
+        dial.removeEventListener("pointerup", finish);
+        dial.removeEventListener("pointercancel", finish);
+      };
+
+      dial.addEventListener("pointermove", onMove);
+      dial.addEventListener("pointerup", finish);
+      dial.addEventListener("pointercancel", finish);
+    });
   }
 
   private bindMeteringControls(): void {
@@ -1048,9 +1129,26 @@ export class CameraLabApp {
     for (const binding of this.dialBindings) {
       const currentValue = state[binding.def.key];
       const index = findNearestValueIndex(binding.values, currentValue);
+      const angle = dialAngleForIndex(index, binding.values.length);
+      const ratio = index / Math.max(1, binding.values.length - 1);
       binding.readout.textContent = binding.def.format(currentValue);
-      binding.minusButton.disabled = index <= 0;
-      binding.plusButton.disabled = index >= binding.values.length - 1;
+      binding.knob.style.transform = `rotate(${angle}deg)`;
+      binding.root.style.setProperty("--dial-ratio", `${ratio}`);
+      binding.root.setAttribute("aria-valuemin", `${binding.values[0]}`);
+      binding.root.setAttribute("aria-valuemax", `${binding.values[binding.values.length - 1]}`);
+      binding.root.setAttribute("aria-valuenow", `${currentValue}`);
+      binding.root.setAttribute("aria-valuetext", binding.def.format(currentValue));
+
+      if (binding.kind === "aperture") {
+        const apertureOpen = 1 - clamp((currentValue - 1.4) / (22 - 1.4), 0, 1);
+        binding.root.style.setProperty("--aperture-open", `${apertureOpen}`);
+      } else if (binding.kind === "lens-zoom") {
+        const zoomNorm = clamp((currentValue - 18) / (120 - 18), 0, 1);
+        binding.root.style.setProperty("--lens-zoom", `${zoomNorm}`);
+      } else if (binding.kind === "lens-focus") {
+        const focusNorm = clamp(Math.log(currentValue / 0.2) / Math.log(50 / 0.2), 0, 1);
+        binding.root.style.setProperty("--lens-focus", `${focusNorm}`);
+      }
     }
   }
 
@@ -1752,6 +1850,19 @@ function parseControlTheme(raw: string | null | undefined): ControlTheme {
   return raw === "camera" ? "camera" : "sliders";
 }
 
+function dialKindForKey(key: NumericParamKey): DialKind {
+  if (key === "aperture") {
+    return "aperture";
+  }
+  if (key === "focalLength") {
+    return "lens-zoom";
+  }
+  if (key === "focusDistance") {
+    return "lens-focus";
+  }
+  return "standard";
+}
+
 function findNearestValueIndex(values: readonly number[], target: number): number {
   if (values.length === 0) {
     return 0;
@@ -1769,6 +1880,34 @@ function findNearestValueIndex(values: readonly number[], target: number): numbe
   }
 
   return bestIndex;
+}
+
+function dialAngleForIndex(index: number, valueCount: number): number {
+  if (valueCount <= 1) {
+    return 0;
+  }
+
+  const ratio = clamp(index / (valueCount - 1), 0, 1);
+  return DIAL_MIN_ANGLE_DEG + ratio * DIAL_SWEEP_DEG;
+}
+
+function pointerAngleFromEvent(event: PointerEvent, dial: HTMLElement): number {
+  const rect = dial.getBoundingClientRect();
+  const centerX = rect.left + rect.width * 0.5;
+  const centerY = rect.top + rect.height * 0.5;
+  const angleRad = Math.atan2(event.clientY - centerY, event.clientX - centerX);
+  return (angleRad * 180) / Math.PI;
+}
+
+function shortestAngleDelta(startDeg: number, endDeg: number): number {
+  let delta = endDeg - startDeg;
+  while (delta > 180) {
+    delta -= 360;
+  }
+  while (delta < -180) {
+    delta += 360;
+  }
+  return delta;
 }
 
 function mapCanvasToImageUv(
