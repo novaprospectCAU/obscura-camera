@@ -1746,6 +1746,7 @@ export class CameraLabApp {
 
     const apiKey = this.elements.aiApiKeyInput.value.trim();
     const prompt = this.elements.aiPromptInput.value.trim();
+    const currentState = this.params.getState();
 
     if (!apiKey) {
       this.setStatus("Enter an OpenAI API key first.");
@@ -1764,8 +1765,10 @@ export class CameraLabApp {
     this.setStatus("AI is generating camera adjustments...");
 
     try {
-      const aiResponse = await requestAiCameraPatch(apiKey, prompt, this.params.getState());
-      const patch = sanitizeAiSuggestedPatch(aiResponse.patch);
+      const aiResponse = await requestAiCameraPatch(apiKey, prompt, currentState);
+      const candidatePatch = extractAiPatchCandidate(aiResponse.patch);
+      let patch = sanitizeAiSuggestedPatch(candidatePatch);
+      patch = ensureVisibleAiPatch(patch, prompt, currentState);
 
       if (!patch || Object.keys(patch).length === 0) {
         this.setStatus("AI response did not include applicable setting changes.");
@@ -1782,12 +1785,24 @@ export class CameraLabApp {
         return;
       }
 
-      this.params.patch(patch);
+      const finalPatch = filterChangedAiPatchFields(patch, currentState);
+      if (!finalPatch || Object.keys(finalPatch).length === 0) {
+        this.setStatus("AI returned near-identical values. Try a stronger style prompt.");
+        return;
+      }
+
+      const changedKeys = Object.keys(finalPatch);
+      const appliedState = this.params.getState();
+      if (appliedState.previewMode === "original") {
+        this.params.set("previewMode", "processed");
+      }
+
+      this.params.patch(finalPatch);
       const summary = aiResponse.summary?.trim();
       if (summary) {
-        this.setStatus(`AI applied: ${summary}`);
+        this.setStatus(`AI applied (${changedKeys.join(", ")}): ${summary}`);
       } else {
-        this.setStatus(`AI applied ${Object.keys(patch).length} setting(s).`);
+        this.setStatus(`AI applied ${changedKeys.length} setting(s): ${changedKeys.join(", ")}.`);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown AI request error.";
@@ -2005,24 +2020,261 @@ function sanitizeAiSuggestedPatch(value: unknown): AiSuggestedPatch | null {
   for (const [key, limits] of Object.entries(PARAM_VALUE_LIMITS) as Array<
     [NumericParamKey, { min: number; max: number }]
   >) {
-    const nextValue = candidate[key];
-    if (!isFiniteNumber(nextValue)) {
+    const nextValue = parseFlexibleNumber(candidate[key], key);
+    if (nextValue === null) {
       continue;
     }
     patch[key] = clamp(nextValue, limits.min, limits.max);
   }
 
-  if (typeof candidate.toneMap === "boolean") {
-    patch.toneMap = candidate.toneMap;
+  const toneMap = parseFlexibleBoolean(candidate.toneMap);
+  if (toneMap !== null) {
+    patch.toneMap = toneMap;
   }
-  if (isFiniteNumber(candidate.upscaleFactor)) {
-    patch.upscaleFactor = coerceUpscaleFactor(candidate.upscaleFactor);
+  const upscaleFactor = parseFlexibleNumber(candidate.upscaleFactor, "upscaleFactor");
+  if (upscaleFactor !== null) {
+    patch.upscaleFactor = coerceUpscaleFactor(upscaleFactor);
   }
   if (typeof candidate.upscaleStyle === "string") {
     patch.upscaleStyle = parseUpscaleStyle(candidate.upscaleStyle);
   }
 
   return Object.keys(patch).length > 0 ? patch : null;
+}
+
+function extractAiPatchCandidate(value: unknown): unknown {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  const nestedPatchKeys = ["patch", "settings", "params", "cameraParams"];
+  for (const key of nestedPatchKeys) {
+    const nested = candidate[key];
+    if (nested && typeof nested === "object") {
+      return nested;
+    }
+  }
+
+  const hasKnownField =
+    Object.keys(PARAM_VALUE_LIMITS).some((key) => key in candidate) ||
+    "toneMap" in candidate ||
+    "upscaleFactor" in candidate ||
+    "upscaleStyle" in candidate;
+  return hasKnownField ? candidate : null;
+}
+
+function ensureVisibleAiPatch(
+  patch: AiSuggestedPatch | null,
+  prompt: string,
+  current: Readonly<CameraParams>
+): AiSuggestedPatch | null {
+  const basePatch = patch ? { ...patch } : {};
+  const meaningfulBase = filterChangedAiPatchFields(basePatch, current);
+  if (meaningfulBase && Object.keys(meaningfulBase).length >= 2) {
+    return basePatch;
+  }
+
+  const fallbackPatch = buildPromptFallbackPatch(prompt, current);
+  if (!fallbackPatch) {
+    return basePatch;
+  }
+
+  const mergedPatch: AiSuggestedPatch = {
+    ...basePatch,
+    ...fallbackPatch
+  };
+  return Object.keys(mergedPatch).length > 0 ? mergedPatch : null;
+}
+
+function filterChangedAiPatchFields(
+  patch: AiSuggestedPatch | null,
+  current: Readonly<CameraParams>
+): AiSuggestedPatch | null {
+  if (!patch) {
+    return null;
+  }
+
+  const next: AiSuggestedPatch = {};
+  for (const numericKey of Object.keys(PARAM_VALUE_LIMITS) as NumericParamKey[]) {
+    const numericValue = patch[numericKey];
+    if (!isFiniteNumber(numericValue)) {
+      continue;
+    }
+    const currentValue = current[numericKey];
+    if (!isMeaningfulNumericChange(numericKey, currentValue, numericValue)) {
+      continue;
+    }
+    next[numericKey] = numericValue;
+  }
+
+  if (typeof patch.toneMap === "boolean" && patch.toneMap !== current.toneMap) {
+    next.toneMap = patch.toneMap;
+  }
+  if (patch.upscaleStyle && patch.upscaleStyle !== current.upscaleStyle) {
+    next.upscaleStyle = patch.upscaleStyle;
+  }
+  if (patch.upscaleFactor !== undefined && patch.upscaleFactor !== current.upscaleFactor) {
+    next.upscaleFactor = patch.upscaleFactor;
+  }
+
+  return Object.keys(next).length > 0 ? next : null;
+}
+
+function isMeaningfulNumericChange(key: NumericParamKey, current: number, next: number): boolean {
+  if (key === "shutter") {
+    return Math.abs(toShutterSlider(next) - toShutterSlider(current)) >= 0.035;
+  }
+
+  const minDelta: Record<NumericParamKey, number> = {
+    exposureEV: 0.07,
+    shutter: 0.001,
+    iso: 28,
+    aperture: 0.2,
+    focalLength: 2,
+    focusDistance: 0.35,
+    distortion: 0.03,
+    vignette: 0.03,
+    chromaAberration: 0.03,
+    temperature: 0.03,
+    tint: 0.03,
+    contrast: 0.03,
+    saturation: 0.04,
+    sharpen: 0.035,
+    noiseReduction: 0.04
+  };
+  return Math.abs(next - current) >= minDelta[key];
+}
+
+function buildPromptFallbackPatch(
+  prompt: string,
+  current: Readonly<CameraParams>
+): AiSuggestedPatch | null {
+  const normalized = prompt.toLowerCase();
+  const patch: AiSuggestedPatch = {};
+  let hitCount = 0;
+
+  const hasAny = (keywords: string[]): boolean => keywords.some((keyword) => normalized.includes(keyword));
+  const setDelta = (key: NumericParamKey, delta: number) => {
+    const limits = PARAM_VALUE_LIMITS[key];
+    patch[key] = clamp(current[key] + delta, limits.min, limits.max);
+  };
+
+  if (hasAny(["cinematic", "movie", "film", "filmic", "시네마", "영화"])) {
+    setDelta("contrast", 0.14);
+    setDelta("saturation", -0.12);
+    setDelta("vignette", 0.2);
+    patch.toneMap = true;
+    hitCount += 1;
+  }
+  if (hasAny(["warm", "golden", "sunset", "따뜻", "웜", "노을"])) {
+    setDelta("temperature", 0.32);
+    setDelta("tint", 0.06);
+    hitCount += 1;
+  } else if (hasAny(["cool", "cold", "blue", "차갑", "쿨", "푸른"])) {
+    setDelta("temperature", -0.34);
+    setDelta("tint", -0.05);
+    hitCount += 1;
+  }
+  if (hasAny(["bright", "clean", "high key", "밝", "쨍", "환하"])) {
+    setDelta("exposureEV", 0.55);
+    setDelta("contrast", 0.07);
+    hitCount += 1;
+  } else if (hasAny(["dark", "moody", "low key", "night", "어둡", "무드", "야간", "야경"])) {
+    setDelta("exposureEV", -0.48);
+    setDelta("contrast", 0.1);
+    setDelta("vignette", 0.16);
+    hitCount += 1;
+  }
+  if (hasAny(["vivid", "rich color", "생생", "강한 색", "채도"])) {
+    setDelta("saturation", 0.22);
+    hitCount += 1;
+  } else if (hasAny(["muted", "matte", "desaturat", "바랜", "저채도", "무채"])) {
+    setDelta("saturation", -0.24);
+    hitCount += 1;
+  }
+  if (hasAny(["sharp", "detail", "crisp", "선명", "디테일"])) {
+    setDelta("sharpen", 0.22);
+    setDelta("noiseReduction", -0.16);
+    hitCount += 1;
+  } else if (hasAny(["soft", "dreamy", "hazy", "부드", "몽환"])) {
+    setDelta("sharpen", -0.2);
+    setDelta("noiseReduction", 0.2);
+    hitCount += 1;
+  }
+
+  if (hitCount === 0) {
+    setDelta("contrast", 0.1);
+    setDelta("saturation", -0.08);
+    setDelta("temperature", -0.06);
+    patch.toneMap = true;
+  }
+
+  return Object.keys(patch).length > 0 ? patch : null;
+}
+
+function parseFlexibleBoolean(value: unknown): boolean | null {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (["true", "1", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["false", "0", "no", "off"].includes(normalized)) {
+    return false;
+  }
+  return null;
+}
+
+function parseFlexibleNumber(
+  value: unknown,
+  key: NumericParamKey | "upscaleFactor"
+): number | null {
+  if (isFiniteNumber(value)) {
+    return value;
+  }
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  let normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+
+  if (key === "aperture") {
+    normalized = normalized.replace(/^f\s*\/\s*/, "");
+  } else if (key === "focalLength") {
+    normalized = normalized.replace(/mm/g, "");
+  } else if (key === "focusDistance") {
+    normalized = normalized.replace(/m(?![a-z])/g, "");
+  } else if (key === "upscaleFactor") {
+    normalized = normalized.replace(/x/g, "");
+  }
+
+  normalized = normalized.replace(/,/g, "");
+
+  const fraction = normalized.match(/(-?\d*\.?\d+)\s*\/\s*(-?\d*\.?\d+)/);
+  if (fraction) {
+    const numerator = Number(fraction[1]);
+    const denominator = Number(fraction[2]);
+    if (Number.isFinite(numerator) && Number.isFinite(denominator) && denominator !== 0) {
+      return numerator / denominator;
+    }
+  }
+
+  const numberMatch = normalized.match(/-?\d*\.?\d+/);
+  if (!numberMatch) {
+    return null;
+  }
+
+  const parsed = Number(numberMatch[0]);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function shouldAllowLensAdjustments(prompt: string): boolean {
@@ -2059,10 +2311,10 @@ async function requestAiCameraPatch(
         role: "system",
         content: [
           "You are a camera look tuning assistant.",
-          "Given the user's prompt and current camera state, produce subtle but visible adjustments.",
+          "Given the user's prompt and current camera state, produce clearly visible adjustments.",
           "Return valid JSON only with shape:",
           '{"patch":{"exposureEV":number,"shutter":number,"iso":number,"aperture":number,"focalLength":number,"focusDistance":number,"distortion":number,"vignette":number,"chromaAberration":number,"temperature":number,"tint":number,"contrast":number,"saturation":number,"sharpen":number,"noiseReduction":number,"toneMap":boolean,"upscaleFactor":number,"upscaleStyle":"balanced"|"enhanced"},"summary":"short text"}',
-          "Use only fields that need to change.",
+          "Change at least 3 fields unless user asks for minimal change.",
           "Respect ranges:",
           "exposureEV[-3..3], shutter[0.000125..0.066667], iso[100..6400], aperture[1.4..22], focalLength[18..120], focusDistance[0.2..50], distortion[-0.5..0.5], vignette[0..1], chromaAberration[0..1], temperature[-1..1], tint[-1..1], contrast[0.5..1.5], saturation[0..2], sharpen[0..1], noiseReduction[0..1], upscaleFactor in [1,1.5,2,2.5,3,3.5,4], upscaleStyle in [balanced,enhanced].",
           "Do not change focalLength or focusDistance unless the prompt explicitly asks for lens/zoom/focus/depth-of-field change."
@@ -2131,7 +2383,7 @@ async function requestAiCameraPatch(
         : "";
 
   return {
-    patch: parsed.patch,
+    patch: parsed,
     summary
   };
 }
