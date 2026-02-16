@@ -1,4 +1,9 @@
-import { DEFAULT_CAMERA_PARAMS, type CameraParams, type PreviewMode } from "../state";
+import {
+  DEFAULT_CAMERA_PARAMS,
+  type CameraParams,
+  type PreviewMode,
+  type UpscaleFactor
+} from "../state";
 import { PingPongFramebuffer } from "./PingPongFramebuffer";
 
 export type HistogramData = {
@@ -12,6 +17,7 @@ export type HistogramData = {
 const HISTOGRAM_BINS = 64;
 const HISTOGRAM_SIZE = 128;
 const HISTOGRAM_INTERVAL_MS = 200;
+const MAX_PROCESS_DIMENSION = 4096;
 
 const VERTEX_SHADER_SOURCE = `#version 300 es
 layout(location = 0) in vec2 aPosition;
@@ -111,6 +117,10 @@ uniform float uShutter;
 uniform float uIso;
 uniform float uAperture;
 uniform float uFocusDistance;
+uniform float uTemperature;
+uniform float uTint;
+uniform float uContrast;
+uniform float uSaturation;
 uniform float uToneMapEnabled;
 uniform float uFrame;
 
@@ -129,6 +139,17 @@ vec3 filmic(vec3 color) {
 
 vec3 sampleInput(vec2 uv) {
   return texture(uInput, clamp(uv, 0.0, 1.0)).rgb;
+}
+
+vec3 applyWhiteBalance(vec3 color) {
+  float warm = clamp(uTemperature, -1.0, 1.0);
+  float tint = clamp(uTint, -1.0, 1.0);
+  vec3 balance = vec3(
+    1.0 + warm * 0.14 - tint * 0.03,
+    1.0 + tint * 0.08,
+    1.0 - warm * 0.14 - tint * 0.03
+  );
+  return color * max(balance, vec3(0.0));
 }
 
 void main() {
@@ -159,10 +180,15 @@ void main() {
   float isoNorm = clamp((uIso - 100.0) / (6400.0 - 100.0), 0.0, 1.0);
   float grain = hash12(gl_FragCoord.xy + vec2(uFrame * 0.173, uFrame * 0.319)) - 0.5;
   color += grain * (isoNorm * 0.12) * (0.35 + color);
+  color = applyWhiteBalance(color);
 
   if (uToneMapEnabled > 0.5) {
     color = filmic(color);
   }
+
+  color = (color - 0.5) * uContrast + 0.5;
+  float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+  color = mix(vec3(luma), color, uSaturation);
 
   outColor = vec4(clamp(color, 0.0, 1.0), 1.0);
 }
@@ -254,6 +280,10 @@ export class WebGLImageRenderer {
   private readonly effectsIsoUniform: WebGLUniformLocation;
   private readonly effectsApertureUniform: WebGLUniformLocation;
   private readonly effectsFocusDistanceUniform: WebGLUniformLocation;
+  private readonly effectsTemperatureUniform: WebGLUniformLocation;
+  private readonly effectsTintUniform: WebGLUniformLocation;
+  private readonly effectsContrastUniform: WebGLUniformLocation;
+  private readonly effectsSaturationUniform: WebGLUniformLocation;
   private readonly effectsToneMapUniform: WebGLUniformLocation;
   private readonly effectsFrameUniform: WebGLUniformLocation;
 
@@ -276,6 +306,8 @@ export class WebGLImageRenderer {
 
   private sourceWidth = 1;
   private sourceHeight = 1;
+  private processWidth = 1;
+  private processHeight = 1;
   private frameIndex = 0;
   private params: CameraParams = { ...DEFAULT_CAMERA_PARAMS };
   private lastHistogramUpdateMs = -Infinity;
@@ -321,6 +353,10 @@ export class WebGLImageRenderer {
     this.effectsIsoUniform = this.requireUniform(this.effectsProgram, "uIso");
     this.effectsApertureUniform = this.requireUniform(this.effectsProgram, "uAperture");
     this.effectsFocusDistanceUniform = this.requireUniform(this.effectsProgram, "uFocusDistance");
+    this.effectsTemperatureUniform = this.requireUniform(this.effectsProgram, "uTemperature");
+    this.effectsTintUniform = this.requireUniform(this.effectsProgram, "uTint");
+    this.effectsContrastUniform = this.requireUniform(this.effectsProgram, "uContrast");
+    this.effectsSaturationUniform = this.requireUniform(this.effectsProgram, "uSaturation");
     this.effectsToneMapUniform = this.requireUniform(this.effectsProgram, "uToneMapEnabled");
     this.effectsFrameUniform = this.requireUniform(this.effectsProgram, "uFrame");
 
@@ -345,6 +381,7 @@ export class WebGLImageRenderer {
 
   setParams(params: Readonly<CameraParams>): void {
     this.params = { ...params };
+    this.updateProcessSize();
   }
 
   getHistogram(): HistogramData {
@@ -449,7 +486,7 @@ export class WebGLImageRenderer {
     const target = this.pingPong.getA();
 
     this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, target.framebuffer);
-    this.gl.viewport(0, 0, this.sourceWidth, this.sourceHeight);
+    this.gl.viewport(0, 0, this.processWidth, this.processHeight);
     this.gl.useProgram(this.inputProgram);
     this.gl.bindVertexArray(this.vao);
 
@@ -470,7 +507,7 @@ export class WebGLImageRenderer {
     const write = this.pingPong.getB();
 
     this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, write.framebuffer);
-    this.gl.viewport(0, 0, this.sourceWidth, this.sourceHeight);
+    this.gl.viewport(0, 0, this.processWidth, this.processHeight);
     this.gl.useProgram(this.lensProgram);
     this.gl.bindVertexArray(this.vao);
 
@@ -494,18 +531,22 @@ export class WebGLImageRenderer {
     const write = this.pingPong.getA();
 
     this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, write.framebuffer);
-    this.gl.viewport(0, 0, this.sourceWidth, this.sourceHeight);
+    this.gl.viewport(0, 0, this.processWidth, this.processHeight);
     this.gl.useProgram(this.effectsProgram);
     this.gl.bindVertexArray(this.vao);
 
     this.gl.activeTexture(this.gl.TEXTURE0);
     this.gl.bindTexture(this.gl.TEXTURE_2D, read.texture);
     this.gl.uniform1i(this.effectsInputUniform, 0);
-    this.gl.uniform2f(this.effectsResolutionUniform, this.sourceWidth, this.sourceHeight);
+    this.gl.uniform2f(this.effectsResolutionUniform, this.processWidth, this.processHeight);
     this.gl.uniform1f(this.effectsShutterUniform, this.params.shutter);
     this.gl.uniform1f(this.effectsIsoUniform, this.params.iso);
     this.gl.uniform1f(this.effectsApertureUniform, this.params.aperture);
     this.gl.uniform1f(this.effectsFocusDistanceUniform, this.params.focusDistance);
+    this.gl.uniform1f(this.effectsTemperatureUniform, this.params.temperature);
+    this.gl.uniform1f(this.effectsTintUniform, this.params.tint);
+    this.gl.uniform1f(this.effectsContrastUniform, this.params.contrast);
+    this.gl.uniform1f(this.effectsSaturationUniform, this.params.saturation);
     this.gl.uniform1f(this.effectsToneMapUniform, this.params.toneMap ? 1 : 0);
     this.gl.uniform1f(this.effectsFrameUniform, this.frameIndex);
 
@@ -699,7 +740,38 @@ export class WebGLImageRenderer {
     );
     this.gl.bindTexture(this.gl.TEXTURE_2D, null);
 
-    this.pingPong.resize(safeWidth, safeHeight);
+    this.updateProcessSize();
+  }
+
+  private updateProcessSize(): void {
+    const upscale = this.coerceUpscaleFactor(this.params.upscaleFactor);
+    let nextWidth = Math.max(1, Math.floor(this.sourceWidth * upscale));
+    let nextHeight = Math.max(1, Math.floor(this.sourceHeight * upscale));
+
+    const maxDim = Math.max(nextWidth, nextHeight);
+    if (maxDim > MAX_PROCESS_DIMENSION) {
+      const downscale = MAX_PROCESS_DIMENSION / maxDim;
+      nextWidth = Math.max(1, Math.floor(nextWidth * downscale));
+      nextHeight = Math.max(1, Math.floor(nextHeight * downscale));
+    }
+
+    if (nextWidth === this.processWidth && nextHeight === this.processHeight) {
+      return;
+    }
+
+    this.processWidth = nextWidth;
+    this.processHeight = nextHeight;
+    this.pingPong.resize(nextWidth, nextHeight);
+  }
+
+  private coerceUpscaleFactor(value: number): UpscaleFactor {
+    if (value >= 2) {
+      return 2;
+    }
+    if (value >= 1.5) {
+      return 1.5;
+    }
+    return 1;
   }
 
   private previewModeToUniform(mode: PreviewMode): number {

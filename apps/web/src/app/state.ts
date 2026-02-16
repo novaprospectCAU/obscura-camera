@@ -1,5 +1,6 @@
 export type PreviewMode = "original" | "processed" | "split";
 export type HistogramMode = "original" | "processed" | "composite";
+export type UpscaleFactor = 1 | 1.5 | 2;
 
 export type CameraParams = {
   exposureEV: number;
@@ -11,7 +12,12 @@ export type CameraParams = {
   distortion: number;
   vignette: number;
   chromaAberration: number;
+  temperature: number;
+  tint: number;
+  contrast: number;
+  saturation: number;
   toneMap: boolean;
+  upscaleFactor: UpscaleFactor;
   previewMode: PreviewMode;
   splitPosition: number;
   histogramMode: HistogramMode;
@@ -27,7 +33,12 @@ export const DEFAULT_CAMERA_PARAMS: CameraParams = {
   distortion: 0,
   vignette: 0,
   chromaAberration: 0,
+  temperature: 0,
+  tint: 0,
+  contrast: 1,
+  saturation: 1,
   toneMap: false,
+  upscaleFactor: 1,
   previewMode: "processed",
   splitPosition: 0.5,
   histogramMode: "composite"
@@ -45,7 +56,10 @@ export const CAMERA_PRESETS: Record<CameraPresetName, Partial<CameraParams>> = {
     focusDistance: 1.6,
     distortion: -0.04,
     vignette: 0.32,
-    chromaAberration: 0.08
+    chromaAberration: 0.08,
+    temperature: 0.12,
+    contrast: 1.04,
+    saturation: 1.06
   },
   Landscape: {
     exposureEV: -0.1,
@@ -56,7 +70,10 @@ export const CAMERA_PRESETS: Record<CameraPresetName, Partial<CameraParams>> = {
     focusDistance: 25,
     distortion: 0.05,
     vignette: 0.18,
-    chromaAberration: 0.03
+    chromaAberration: 0.03,
+    temperature: -0.04,
+    contrast: 1.08,
+    saturation: 1.18
   },
   Night: {
     exposureEV: 1.2,
@@ -67,7 +84,11 @@ export const CAMERA_PRESETS: Record<CameraPresetName, Partial<CameraParams>> = {
     focusDistance: 5,
     distortion: 0,
     vignette: 0.4,
-    chromaAberration: 0.12
+    chromaAberration: 0.12,
+    temperature: -0.08,
+    tint: 0.04,
+    contrast: 0.93,
+    saturation: 0.88
   }
 };
 

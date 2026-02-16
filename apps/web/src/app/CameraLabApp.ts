@@ -4,7 +4,8 @@ import {
   DEFAULT_CAMERA_PARAMS,
   type CameraParams,
   type CameraPresetName,
-  type HistogramMode
+  type HistogramMode,
+  type UpscaleFactor
 } from "./state";
 import { type HistogramData, WebGLImageRenderer } from "./gl/WebGLImageRenderer";
 
@@ -18,7 +19,11 @@ type NumericParamKey =
   | "focusDistance"
   | "distortion"
   | "vignette"
-  | "chromaAberration";
+  | "chromaAberration"
+  | "temperature"
+  | "tint"
+  | "contrast"
+  | "saturation";
 
 type PresetPatch = Pick<
   CameraParams,
@@ -31,6 +36,10 @@ type PresetPatch = Pick<
   | "distortion"
   | "vignette"
   | "chromaAberration"
+  | "temperature"
+  | "tint"
+  | "contrast"
+  | "saturation"
   | "toneMap"
 >;
 
@@ -70,6 +79,7 @@ type AppElements = {
   splitSlider: HTMLInputElement;
   splitReadout: HTMLOutputElement;
   toneMapToggle: HTMLInputElement;
+  upscaleSelect: HTMLSelectElement;
   histogramModeSelect: HTMLSelectElement;
   paramControls: HTMLElement;
   histogramCanvas: HTMLCanvasElement;
@@ -85,6 +95,7 @@ const BUILTIN_PRESET_NAMES: readonly CameraPresetName[] = ["Portrait", "Landscap
 const IDENTITY = (value: number): number => value;
 const SHUTTER_MIN = 1 / 8000;
 const SHUTTER_MAX = 1 / 15;
+const SNAPSHOT_MAX_DIMENSION = 8192;
 
 const toShutterSeconds = (sliderValue: number): number =>
   SHUTTER_MIN * Math.pow(SHUTTER_MAX / SHUTTER_MIN, clamp(sliderValue, 0, 1));
@@ -192,6 +203,46 @@ const PARAM_SLIDER_DEFS: SliderControlDef[] = [
     label: "Chroma Aberration",
     min: 0,
     max: 1,
+    step: 0.01,
+    toValue: IDENTITY,
+    toRaw: IDENTITY,
+    format: (value) => value.toFixed(2)
+  },
+  {
+    key: "temperature",
+    label: "White Balance Temp",
+    min: -1,
+    max: 1,
+    step: 0.01,
+    toValue: IDENTITY,
+    toRaw: IDENTITY,
+    format: (value) => formatSigned(value, 2)
+  },
+  {
+    key: "tint",
+    label: "White Balance Tint",
+    min: -1,
+    max: 1,
+    step: 0.01,
+    toValue: IDENTITY,
+    toRaw: IDENTITY,
+    format: (value) => formatSigned(value, 2)
+  },
+  {
+    key: "contrast",
+    label: "Contrast",
+    min: 0.5,
+    max: 1.5,
+    step: 0.01,
+    toValue: IDENTITY,
+    toRaw: IDENTITY,
+    format: (value) => value.toFixed(2)
+  },
+  {
+    key: "saturation",
+    label: "Saturation",
+    min: 0,
+    max: 2,
     step: 0.01,
     toValue: IDENTITY,
     toRaw: IDENTITY,
@@ -319,6 +370,14 @@ export class CameraLabApp {
               <span>Tone Mapping</span>
               <input id="tone-map-toggle" type="checkbox" />
             </label>
+            <label class="upscale-row" for="upscale-select">
+              <span>Upscale</span>
+              <select id="upscale-select">
+                <option value="1">1x</option>
+                <option value="1.5">1.5x</option>
+                <option value="2">2x</option>
+              </select>
+            </label>
             <p class="hint">Shortcuts: <code>Space</code> A/B, <code>S</code> Split, <code>R</code> Reset</p>
           </section>
 
@@ -424,6 +483,7 @@ export class CameraLabApp {
       splitSlider: this.requireElement<HTMLInputElement>("#split-slider"),
       splitReadout: this.requireElement<HTMLOutputElement>("#split-readout"),
       toneMapToggle: this.requireElement<HTMLInputElement>("#tone-map-toggle"),
+      upscaleSelect: this.requireElement<HTMLSelectElement>("#upscale-select"),
       histogramModeSelect: this.requireElement<HTMLSelectElement>("#histogram-mode-select"),
       paramControls: this.requireElement<HTMLElement>("#param-controls"),
       histogramCanvas: this.requireElement<HTMLCanvasElement>("#histogram-canvas"),
@@ -567,6 +627,7 @@ export class CameraLabApp {
       previewSplitButton,
       splitSlider,
       toneMapToggle,
+      upscaleSelect,
       histogramModeSelect
     } = this.elements;
 
@@ -584,6 +645,9 @@ export class CameraLabApp {
     });
     toneMapToggle.addEventListener("change", () => {
       this.params.set("toneMap", Boolean(toneMapToggle.checked));
+    });
+    upscaleSelect.addEventListener("change", () => {
+      this.params.set("upscaleFactor", parseUpscaleFactor(upscaleSelect.value));
     });
     histogramModeSelect.addEventListener("change", () => {
       this.params.set("histogramMode", histogramModeSelect.value as HistogramMode);
@@ -649,6 +713,7 @@ export class CameraLabApp {
     this.elements.splitSlider.value = `${state.splitPosition}`;
     this.elements.splitControl.classList.toggle("is-hidden", state.previewMode !== "split");
     this.elements.toneMapToggle.checked = state.toneMap;
+    this.elements.upscaleSelect.value = `${state.upscaleFactor}`;
     this.elements.histogramModeSelect.value = state.histogramMode;
   }
 
@@ -910,7 +975,9 @@ export class CameraLabApp {
       return;
     }
 
-    const canvas = this.elements.canvas;
+    const sourceCanvas = this.elements.canvas;
+    const factor = this.params.getState().upscaleFactor;
+    const canvas = createSnapshotCanvas(sourceCanvas, factor);
     const filename = `obscura-shot-${new Date().toISOString().replace(/[:.]/g, "-")}.png`;
     const triggerDownload = (url: string) => {
       const link = document.createElement("a");
@@ -1169,6 +1236,10 @@ function extractPresetPatch(state: Readonly<CameraParams>): PresetPatch {
     distortion: state.distortion,
     vignette: state.vignette,
     chromaAberration: state.chromaAberration,
+    temperature: state.temperature,
+    tint: state.tint,
+    contrast: state.contrast,
+    saturation: state.saturation,
     toneMap: state.toneMap
   };
 }
@@ -1194,6 +1265,11 @@ function toPresetPatch(value: unknown): PresetPatch | null {
     return null;
   }
 
+  const temperature = isFiniteNumber(candidate.temperature) ? candidate.temperature : 0;
+  const tint = isFiniteNumber(candidate.tint) ? candidate.tint : 0;
+  const contrast = isFiniteNumber(candidate.contrast) ? candidate.contrast : 1;
+  const saturation = isFiniteNumber(candidate.saturation) ? candidate.saturation : 1;
+
   return {
     exposureEV: candidate.exposureEV,
     shutter: candidate.shutter,
@@ -1204,6 +1280,10 @@ function toPresetPatch(value: unknown): PresetPatch | null {
     distortion: candidate.distortion,
     vignette: candidate.vignette,
     chromaAberration: candidate.chromaAberration,
+    temperature,
+    tint,
+    contrast,
+    saturation,
     toneMap: candidate.toneMap
   };
 }
@@ -1224,7 +1304,12 @@ function toSessionPatch(value: unknown): Partial<CameraParams> | null {
   if (isFiniteNumber(candidate.distortion)) patch.distortion = candidate.distortion;
   if (isFiniteNumber(candidate.vignette)) patch.vignette = candidate.vignette;
   if (isFiniteNumber(candidate.chromaAberration)) patch.chromaAberration = candidate.chromaAberration;
+  if (isFiniteNumber(candidate.temperature)) patch.temperature = candidate.temperature;
+  if (isFiniteNumber(candidate.tint)) patch.tint = candidate.tint;
+  if (isFiniteNumber(candidate.contrast)) patch.contrast = candidate.contrast;
+  if (isFiniteNumber(candidate.saturation)) patch.saturation = candidate.saturation;
   if (typeof candidate.toneMap === "boolean") patch.toneMap = candidate.toneMap;
+  if (isFiniteNumber(candidate.upscaleFactor)) patch.upscaleFactor = coerceUpscaleFactor(candidate.upscaleFactor);
   if (
     candidate.previewMode === "original" ||
     candidate.previewMode === "processed" ||
@@ -1246,6 +1331,48 @@ function toSessionPatch(value: unknown): Partial<CameraParams> | null {
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
+}
+
+function parseUpscaleFactor(raw: string): UpscaleFactor {
+  const parsed = Number(raw);
+  return coerceUpscaleFactor(parsed);
+}
+
+function coerceUpscaleFactor(value: number): UpscaleFactor {
+  if (value >= 2) {
+    return 2;
+  }
+  if (value >= 1.5) {
+    return 1.5;
+  }
+  return 1;
+}
+
+function createSnapshotCanvas(source: HTMLCanvasElement, factor: UpscaleFactor): HTMLCanvasElement {
+  if (factor === 1) {
+    return source;
+  }
+
+  const scaledWidth = Math.max(1, Math.floor(source.width * factor));
+  const scaledHeight = Math.max(1, Math.floor(source.height * factor));
+  const maxDim = Math.max(scaledWidth, scaledHeight);
+  const scaleDown = maxDim > SNAPSHOT_MAX_DIMENSION ? SNAPSHOT_MAX_DIMENSION / maxDim : 1;
+  const width = Math.max(1, Math.floor(scaledWidth * scaleDown));
+  const height = Math.max(1, Math.floor(scaledHeight * scaleDown));
+
+  const target = document.createElement("canvas");
+  target.width = width;
+  target.height = height;
+
+  const ctx = target.getContext("2d");
+  if (!ctx) {
+    return source;
+  }
+
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(source, 0, 0, width, height);
+  return target;
 }
 
 function readStorage(key: string): string | null {
@@ -1281,4 +1408,3 @@ function isEditableTarget(target: EventTarget | null): boolean {
     target.isContentEditable
   );
 }
-

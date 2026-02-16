@@ -211,6 +211,26 @@ body {
   font-size: 0.86rem;
 }
 
+.upscale-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.upscale-row span {
+  color: var(--muted);
+  font-size: 0.83rem;
+}
+
+.upscale-row select {
+  border: 1px solid var(--panel-border);
+  background: #10151d;
+  color: var(--text);
+  border-radius: 0.45rem;
+  padding: 0.45rem 0.5rem;
+}
+
 .param-section {
   gap: 0.45rem;
 }

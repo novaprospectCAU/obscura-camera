@@ -19,6 +19,8 @@ This folder contains the initial web MVP with:
 - Custom preset save/load (localStorage)
 - Histogram source mode selector (Original / Processed / Composite)
 - Session state restore on reload (localStorage)
+- Camera color controls: white balance (temp/tint), contrast, saturation
+- Upscaling controls: 1x / 1.5x / 2x internal processing + scaled PNG export
 
 Not included yet:
 
