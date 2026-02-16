@@ -57,6 +57,16 @@ type AiSuggestedPatch = Partial<
   >
 >;
 
+type SubjectContext = {
+  center: { x: number; y: number };
+  box: { x: number; y: number; width: number; height: number };
+  areaRatio: number;
+  brightness: number;
+  sharpness: number;
+  offCenter: number;
+  backlit: boolean;
+};
+
 type SliderControlDef = {
   key: NumericParamKey;
   label: string;
@@ -1765,7 +1775,8 @@ export class CameraLabApp {
     this.setStatus("AI is generating camera adjustments...");
 
     try {
-      const aiResponse = await requestAiCameraPatch(apiKey, prompt, currentState);
+      const subjectContext = this.analyzeSubjectContext();
+      const aiResponse = await requestAiCameraPatch(apiKey, prompt, currentState, subjectContext);
       const candidatePatch = extractAiPatchCandidate(aiResponse.patch);
       let patch = sanitizeAiSuggestedPatch(candidatePatch);
       patch = ensureVisibleAiPatch(patch, prompt, currentState);
@@ -1775,7 +1786,7 @@ export class CameraLabApp {
         return;
       }
 
-      patch = enforceAiPatchSafety(patch, prompt, currentState);
+      patch = enforceAiPatchSafety(patch, prompt, currentState, subjectContext);
 
       if (Object.keys(patch).length === 0) {
         this.setStatus("AI changes were filtered by safety guards. Try a more explicit prompt.");
@@ -1797,7 +1808,11 @@ export class CameraLabApp {
       this.params.patch(finalPatch);
       const summary = aiResponse.summary?.trim();
       if (summary) {
-        this.setStatus(`AI applied (${changedKeys.join(", ")}): ${summary}`);
+        this.setStatus(
+          subjectContext
+            ? `AI applied (${changedKeys.join(", ")}): ${summary} [subject ${Math.round(subjectContext.center.x * 100)}%,${Math.round(subjectContext.center.y * 100)}%]`
+            : `AI applied (${changedKeys.join(", ")}): ${summary}`
+        );
       } else {
         this.setStatus(`AI applied ${changedKeys.length} setting(s): ${changedKeys.join(", ")}.`);
       }
@@ -1808,6 +1823,30 @@ export class CameraLabApp {
       this.aiRequestInFlight = false;
       this.setAiBusy(false);
     }
+  }
+
+  private analyzeSubjectContext(): SubjectContext | null {
+    const dims = this.getActiveSourceDimensions();
+    const target = this.sourceMode === "webcam" ? this.webcamVideo : this.loadedImage;
+    if (!dims || !target) {
+      return null;
+    }
+
+    const maxSize = 128;
+    const sourceAspect = dims.width / dims.height;
+    const analysisWidth = Math.max(48, Math.min(maxSize, Math.round(sourceAspect >= 1 ? maxSize : maxSize * sourceAspect)));
+    const analysisHeight = Math.max(48, Math.min(maxSize, Math.round(sourceAspect >= 1 ? maxSize / sourceAspect : maxSize)));
+
+    this.meterCanvas.width = analysisWidth;
+    this.meterCanvas.height = analysisHeight;
+    const ctx = this.meterCanvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) {
+      return null;
+    }
+
+    ctx.drawImage(target, 0, 0, analysisWidth, analysisHeight);
+    const imageData = ctx.getImageData(0, 0, analysisWidth, analysisHeight);
+    return estimateSubjectContext(imageData.data, analysisWidth, analysisHeight);
   }
 
   private restoreSessionState(): void {
@@ -2396,7 +2435,8 @@ function shouldPreferLowNoise(prompt: string): boolean {
 function enforceAiPatchSafety(
   patch: AiSuggestedPatch,
   prompt: string,
-  current: Readonly<CameraParams>
+  current: Readonly<CameraParams>,
+  subjectContext: SubjectContext | null
 ): AiSuggestedPatch {
   const next: AiSuggestedPatch = { ...patch };
 
@@ -2429,6 +2469,15 @@ function enforceAiPatchSafety(
     next.exposureEV = clamp(limited, -1.8, 1.6);
   }
 
+  if (subjectContext && isFiniteNumber(next.exposureEV)) {
+    if (subjectContext.brightness >= 0.72) {
+      next.exposureEV = Math.min(next.exposureEV, current.exposureEV + 0.1);
+    } else if (subjectContext.brightness <= 0.2 && !allowAggressiveExposure) {
+      next.exposureEV = Math.max(next.exposureEV, current.exposureEV - 0.1);
+      next.exposureEV = Math.min(next.exposureEV, current.exposureEV + 0.45);
+    }
+  }
+
   if (!allowAggressiveExposure && next.toneMap === true && isFiniteNumber(next.exposureEV)) {
     next.exposureEV = Math.min(next.exposureEV, current.exposureEV + 0.25);
   }
@@ -2452,10 +2501,231 @@ function enforceAiPatchSafety(
   return next;
 }
 
+function estimateSubjectContext(
+  pixels: Uint8ClampedArray,
+  width: number,
+  height: number
+): SubjectContext | null {
+  const pixelCount = width * height;
+  if (pixelCount < 64) {
+    return null;
+  }
+
+  const luminance = new Float32Array(pixelCount);
+  const salience = new Float32Array(pixelCount);
+  let avgLuminance = 0;
+
+  for (let i = 0, p = 0; i < pixelCount; i += 1, p += 4) {
+    const r = srgbToLinear(pixels[p] / 255);
+    const g = srgbToLinear(pixels[p + 1] / 255);
+    const b = srgbToLinear(pixels[p + 2] / 255);
+    const l = clamp(r * 0.2126 + g * 0.7152 + b * 0.0722, 0, 1);
+    luminance[i] = l;
+    avgLuminance += l;
+  }
+  avgLuminance /= pixelCount;
+
+  const sigma = 0.38;
+  let energySum = 0;
+  let weightedX = 0;
+  let weightedY = 0;
+  let salienceSum = 0;
+  let salienceMax = 0;
+
+  for (let y = 1; y < height - 1; y += 1) {
+    for (let x = 1; x < width - 1; x += 1) {
+      const i = y * width + x;
+      const gx = Math.abs(luminance[i + 1] - luminance[i - 1]);
+      const gy = Math.abs(luminance[i + width] - luminance[i - width]);
+      const gradient = gx + gy;
+      const nx = (x + 0.5) / width - 0.5;
+      const ny = (y + 0.5) / height - 0.5;
+      const centerWeight = Math.exp(-((nx * nx + ny * ny) / (2 * sigma * sigma)));
+      const energy = gradient * (0.58 + centerWeight * 0.42);
+
+      salience[i] = energy;
+      energySum += energy;
+      weightedX += energy * (x + 0.5);
+      weightedY += energy * (y + 0.5);
+      salienceSum += energy;
+      salienceMax = Math.max(salienceMax, energy);
+    }
+  }
+
+  if (energySum <= 1e-6) {
+    return {
+      center: { x: 0.5, y: 0.5 },
+      box: { x: 0.3, y: 0.3, width: 0.4, height: 0.4 },
+      areaRatio: 0.16,
+      brightness: avgLuminance,
+      sharpness: 0,
+      offCenter: 0,
+      backlit: false
+    };
+  }
+
+  const centerXNorm = clamp(weightedX / energySum / width, 0, 1);
+  const centerYNorm = clamp(weightedY / energySum / height, 0, 1);
+
+  const interiorCount = Math.max(1, (width - 2) * (height - 2));
+  const salienceMean = salienceSum / interiorCount;
+  const threshold = salienceMean + (salienceMax - salienceMean) * 0.35;
+
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+  let selectedCount = 0;
+  let subjectLumSum = 0;
+  let subjectSalienceSum = 0;
+
+  for (let y = 1; y < height - 1; y += 1) {
+    for (let x = 1; x < width - 1; x += 1) {
+      const i = y * width + x;
+      if (salience[i] < threshold) {
+        continue;
+      }
+
+      selectedCount += 1;
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+      subjectLumSum += luminance[i];
+      subjectSalienceSum += salience[i];
+    }
+  }
+
+  if (selectedCount < Math.max(24, Math.round(pixelCount * 0.012))) {
+    const fallbackHalfW = Math.max(8, Math.round(width * 0.2));
+    const fallbackHalfH = Math.max(8, Math.round(height * 0.2));
+    const cx = Math.round(centerXNorm * (width - 1));
+    const cy = Math.round(centerYNorm * (height - 1));
+    minX = clamp(cx - fallbackHalfW, 0, width - 1);
+    maxX = clamp(cx + fallbackHalfW, 0, width - 1);
+    minY = clamp(cy - fallbackHalfH, 0, height - 1);
+    maxY = clamp(cy + fallbackHalfH, 0, height - 1);
+    selectedCount = Math.max(1, (maxX - minX + 1) * (maxY - minY + 1));
+    subjectLumSum = regionLuminanceMean(luminance, width, height, minX, minY, maxX, maxY) * selectedCount;
+    subjectSalienceSum = salienceMean * selectedCount;
+  }
+
+  const padX = Math.max(1, Math.round((maxX - minX + 1) * 0.06));
+  const padY = Math.max(1, Math.round((maxY - minY + 1) * 0.06));
+  minX = clamp(minX - padX, 0, width - 1);
+  maxX = clamp(maxX + padX, 0, width - 1);
+  minY = clamp(minY - padY, 0, height - 1);
+  maxY = clamp(maxY + padY, 0, height - 1);
+
+  const boxWidthPx = Math.max(1, maxX - minX + 1);
+  const boxHeightPx = Math.max(1, maxY - minY + 1);
+  const box = {
+    x: clamp(minX / width, 0, 1),
+    y: clamp(minY / height, 0, 1),
+    width: clamp(boxWidthPx / width, 0, 1),
+    height: clamp(boxHeightPx / height, 0, 1)
+  };
+
+  const subjectBrightness = clamp(subjectLumSum / Math.max(1, selectedCount), 0, 1);
+  const avgSubjectSalience = subjectSalienceSum / Math.max(1, selectedCount);
+  const sharpness = clamp(avgSubjectSalience / 0.16, 0, 1);
+  const areaRatio = clamp((boxWidthPx * boxHeightPx) / pixelCount, 0, 1);
+
+  const expansion = 1.55;
+  const expandedHalfW = Math.round((boxWidthPx * expansion) * 0.5);
+  const expandedHalfH = Math.round((boxHeightPx * expansion) * 0.5);
+  const centerPxX = Math.round((minX + maxX) * 0.5);
+  const centerPxY = Math.round((minY + maxY) * 0.5);
+  const exMinX = clamp(centerPxX - expandedHalfW, 0, width - 1);
+  const exMaxX = clamp(centerPxX + expandedHalfW, 0, width - 1);
+  const exMinY = clamp(centerPxY - expandedHalfH, 0, height - 1);
+  const exMaxY = clamp(centerPxY + expandedHalfH, 0, height - 1);
+
+  let ringLumSum = 0;
+  let ringCount = 0;
+  for (let y = exMinY; y <= exMaxY; y += 1) {
+    for (let x = exMinX; x <= exMaxX; x += 1) {
+      const insideSubject = x >= minX && x <= maxX && y >= minY && y <= maxY;
+      if (insideSubject) {
+        continue;
+      }
+      ringLumSum += luminance[y * width + x];
+      ringCount += 1;
+    }
+  }
+  const ringBrightness = ringCount > 0 ? ringLumSum / ringCount : avgLuminance;
+  const backlit = ringBrightness - subjectBrightness > 0.11 && subjectBrightness < 0.6;
+  const offCenter = clamp(
+    Math.hypot(centerXNorm - 0.5, centerYNorm - 0.5) / 0.7071067811865476,
+    0,
+    1
+  );
+
+  return {
+    center: {
+      x: centerXNorm,
+      y: centerYNorm
+    },
+    box,
+    areaRatio,
+    brightness: subjectBrightness,
+    sharpness,
+    offCenter,
+    backlit
+  };
+}
+
+function regionLuminanceMean(
+  luminance: Float32Array,
+  width: number,
+  height: number,
+  minX: number,
+  minY: number,
+  maxX: number,
+  maxY: number
+): number {
+  const x0 = clamp(minX, 0, width - 1);
+  const y0 = clamp(minY, 0, height - 1);
+  const x1 = clamp(maxX, 0, width - 1);
+  const y1 = clamp(maxY, 0, height - 1);
+
+  let sum = 0;
+  let count = 0;
+  for (let y = y0; y <= y1; y += 1) {
+    for (let x = x0; x <= x1; x += 1) {
+      sum += luminance[y * width + x];
+      count += 1;
+    }
+  }
+  return count > 0 ? sum / count : 0;
+}
+
+function sanitizeSubjectContextForPrompt(subject: SubjectContext): SubjectContext {
+  const round = (value: number): number => Number(value.toFixed(3));
+  return {
+    center: {
+      x: round(clamp(subject.center.x, 0, 1)),
+      y: round(clamp(subject.center.y, 0, 1))
+    },
+    box: {
+      x: round(clamp(subject.box.x, 0, 1)),
+      y: round(clamp(subject.box.y, 0, 1)),
+      width: round(clamp(subject.box.width, 0.02, 1)),
+      height: round(clamp(subject.box.height, 0.02, 1))
+    },
+    areaRatio: round(clamp(subject.areaRatio, 0, 1)),
+    brightness: round(clamp(subject.brightness, 0, 1)),
+    sharpness: round(clamp(subject.sharpness, 0, 1)),
+    offCenter: round(clamp(subject.offCenter, 0, 1)),
+    backlit: Boolean(subject.backlit)
+  };
+}
+
 async function requestAiCameraPatch(
   apiKey: string,
   prompt: string,
-  state: Readonly<CameraParams>
+  state: Readonly<CameraParams>,
+  subjectContext: SubjectContext | null
 ): Promise<{ patch: unknown; summary: string }> {
   const requestBody = {
     model: OPENAI_MODEL,
@@ -2474,6 +2744,9 @@ async function requestAiCameraPatch(
           "Change at least 3 fields unless user asks for minimal change.",
           "Respect ranges:",
           "exposureEV[-3..3], shutter[0.000125..0.066667], iso[100..6400], aperture[1.4..22], focalLength[18..120], focusDistance[0.2..50], distortion[-0.5..0.5], vignette[0..1], chromaAberration[0..1], temperature[-1..1], tint[-1..1], contrast[0.5..1.5], saturation[0..2], sharpen[0..1], noiseReduction[0..1], upscaleFactor in [1,1.5,2,2.5,3,3.5,4], upscaleStyle in [balanced,enhanced].",
+          "Use subjectContext to protect subject exposure and apparent focus.",
+          "If subjectContext.brightness is high, avoid brightening aggressively.",
+          "If subjectContext.backlit is true, prefer modest EV increase and tone mapping over extreme contrast jumps.",
           "Keep exposure conservative by default; unless user explicitly requests brighter/darker look, keep exposureEV delta within +-0.35 from current.",
           "Do not change aperture/focusDistance unless user explicitly asks for depth-of-field or bokeh changes.",
           "Do not change shutter unless user explicitly asks for motion blur, long exposure, or shutter behavior.",
@@ -2504,8 +2777,10 @@ async function requestAiCameraPatch(
             noiseReduction: state.noiseReduction,
             toneMap: state.toneMap,
             upscaleFactor: state.upscaleFactor,
-            upscaleStyle: state.upscaleStyle
-          }
+            upscaleStyle: state.upscaleStyle,
+            subjectContext: subjectContext ? sanitizeSubjectContextForPrompt(subjectContext) : null
+          },
+          subjectContext: subjectContext ? sanitizeSubjectContextForPrompt(subjectContext) : null
         })
       }
     ]

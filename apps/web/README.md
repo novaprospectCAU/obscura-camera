@@ -26,6 +26,7 @@ This folder contains the initial web MVP with:
 - Performance modes: Quality / Balanced / Fast (preview resolution scaling, high-quality snapshot export)
 - Parameter UI theme switch: `Sliders` or animated camera-style rotating `Dials` (aperture/lens-specific motion)
 - AI prompt control: enter OpenAI API key + natural-language look prompt to auto-adjust camera settings
+- Subject-aware AI prompt context (center/bbox/brightness/sharpness/backlit) to stabilize exposure/focus suggestions
 
 Not included yet:
 
