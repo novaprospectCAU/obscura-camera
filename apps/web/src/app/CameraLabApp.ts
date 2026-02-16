@@ -1779,6 +1779,7 @@ export class CameraLabApp {
         delete patch.focalLength;
         delete patch.focusDistance;
       }
+      patch = enforceAiUpscaleSafety(patch, prompt, currentState);
 
       if (Object.keys(patch).length === 0) {
         this.setStatus("AI changes were ignored (lens changes require explicit prompt).");
@@ -2295,6 +2296,65 @@ function shouldAllowLensAdjustments(prompt: string): boolean {
   return keywords.some((keyword) => normalized.includes(keyword));
 }
 
+function shouldAllowEnhancedUpscale(prompt: string): boolean {
+  const normalized = prompt.toLowerCase();
+  const keywords = [
+    "enhanced",
+    "strong difference",
+    "texture",
+    "grain",
+    "gritty",
+    "fine detail",
+    "micro-contrast",
+    "텍스처",
+    "질감",
+    "그레인",
+    "디테일",
+    "강한 차이",
+    "선명 디테일"
+  ];
+  return keywords.some((keyword) => normalized.includes(keyword));
+}
+
+function shouldPreferLowNoise(prompt: string): boolean {
+  const normalized = prompt.toLowerCase();
+  const keywords = [
+    "clean",
+    "low noise",
+    "noise free",
+    "noise-free",
+    "denoise",
+    "smooth",
+    "clean image",
+    "노이즈 줄",
+    "노이즈 제거",
+    "저노이즈",
+    "깨끗",
+    "매끈"
+  ];
+  return keywords.some((keyword) => normalized.includes(keyword));
+}
+
+function enforceAiUpscaleSafety(
+  patch: AiSuggestedPatch,
+  prompt: string,
+  current: Readonly<CameraParams>
+): AiSuggestedPatch {
+  const next: AiSuggestedPatch = { ...patch };
+  const allowEnhanced = shouldAllowEnhancedUpscale(prompt) && !shouldPreferLowNoise(prompt);
+  if (next.upscaleStyle === "enhanced" && !allowEnhanced) {
+    next.upscaleStyle = "balanced";
+  }
+
+  if (next.upscaleStyle === "enhanced") {
+    const currentNr = current.noiseReduction;
+    const nextNr = isFiniteNumber(next.noiseReduction) ? next.noiseReduction : currentNr;
+    next.noiseReduction = clamp(Math.max(nextNr, 0.38), 0, 1);
+  }
+
+  return next;
+}
+
 async function requestAiCameraPatch(
   apiKey: string,
   prompt: string,
@@ -2317,6 +2377,8 @@ async function requestAiCameraPatch(
           "Change at least 3 fields unless user asks for minimal change.",
           "Respect ranges:",
           "exposureEV[-3..3], shutter[0.000125..0.066667], iso[100..6400], aperture[1.4..22], focalLength[18..120], focusDistance[0.2..50], distortion[-0.5..0.5], vignette[0..1], chromaAberration[0..1], temperature[-1..1], tint[-1..1], contrast[0.5..1.5], saturation[0..2], sharpen[0..1], noiseReduction[0..1], upscaleFactor in [1,1.5,2,2.5,3,3.5,4], upscaleStyle in [balanced,enhanced].",
+          "Default upscaleStyle to balanced.",
+          "Use enhanced only if user explicitly asks for stronger texture/grain/detail and does not ask for a clean/low-noise image.",
           "Do not change focalLength or focusDistance unless the prompt explicitly asks for lens/zoom/focus/depth-of-field change."
         ].join("\n")
       },

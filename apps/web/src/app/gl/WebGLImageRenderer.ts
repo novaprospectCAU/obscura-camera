@@ -181,7 +181,7 @@ void main() {
   float focusBlurStrength = mix(1.2, 9.0, apertureWide);
   float blurPixels = shutterNorm * 5.0 + coc * focusBlurStrength;
   float upscaleMag = max(1.0, max(uEffectScale.x, uEffectScale.y));
-  float styleBoost = mix(1.0, pow(upscaleMag, 0.75), uUpscaleStyle);
+  float styleBoost = mix(1.0, pow(upscaleMag, 0.45), uUpscaleStyle);
 
   vec2 blurStepX = vec2((blurPixels * uEffectScale.x * styleBoost) / uResolution.x, 0.0);
   vec2 blurStepY = vec2(0.0, (blurPixels * uEffectScale.y * styleBoost) / uResolution.y);
@@ -196,8 +196,9 @@ void main() {
 
   float isoNorm = clamp((uIso - 100.0) / (6400.0 - 100.0), 0.0, 1.0);
   float grain = hash12(gl_FragCoord.xy + vec2(uFrame * 0.173, uFrame * 0.319)) - 0.5;
-  float grainScale = mix(1.0, sqrt(upscaleMag), uUpscaleStyle);
-  color += grain * (isoNorm * 0.12) * (0.35 + color) * grainScale;
+  float grainScale = mix(1.0, pow(upscaleMag, 0.33), uUpscaleStyle);
+  float grainAmount = (isoNorm * 0.07) * (1.0 - uNoiseReduction * 0.45);
+  color += grain * grainAmount * (0.35 + color) * grainScale;
 
   vec2 pixelStep = vec2(
     (uEffectScale.x * styleBoost) / uResolution.x,
@@ -205,13 +206,14 @@ void main() {
   );
   vec3 denoised = crossBlur(vUv, pixelStep * (0.8 + isoNorm));
   float nrAmount = clamp(uNoiseReduction * (0.35 + isoNorm * 0.85), 0.0, 0.95);
-  nrAmount = mix(nrAmount, nrAmount / styleBoost, uUpscaleStyle);
+  float enhancedNr = clamp(nrAmount * (1.2 + isoNorm * 0.2), 0.0, 0.98);
+  nrAmount = mix(nrAmount, enhancedNr, uUpscaleStyle);
   color = mix(color, denoised, nrAmount);
 
   vec3 localAverage = crossBlur(vUv, pixelStep * 0.85);
   vec3 detail = color - localAverage;
   float detailGain = uSharpen * 1.35;
-  detailGain = mix(detailGain, detailGain + (styleBoost - 1.0) * 0.45, uUpscaleStyle);
+  detailGain = mix(detailGain, detailGain + (styleBoost - 1.0) * 0.24, uUpscaleStyle);
   color += detail * detailGain;
   color = applyWhiteBalance(color);
 
