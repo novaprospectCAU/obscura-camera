@@ -1626,27 +1626,22 @@ export class CameraLabApp {
   }
 
   private syncLensShiftFromMarkers(): void {
-    let focusMarker: LensMarker | undefined;
-    if (this.selectedMarkerId) {
-      const selected = this.markers.find(
-        (marker) => marker.id === this.selectedMarkerId && marker.kind === "focus"
-      );
-      if (selected) {
-        focusMarker = selected;
-      }
-    }
-    if (!focusMarker) {
-      for (let i = this.markers.length - 1; i >= 0; i -= 1) {
-        if (this.markers[i].kind === "focus") {
-          focusMarker = this.markers[i];
-          break;
-        }
-      }
-    }
-    if (!focusMarker) {
+    const focusMarkers = this.markers.filter((marker) => marker.kind === "focus");
+    if (focusMarkers.length === 0) {
       return;
     }
-    this.applyLensShiftFromUv(focusMarker.x, focusMarker.y);
+    let weightedX = 0;
+    let weightedY = 0;
+    let weightSum = 0;
+    for (const marker of focusMarkers) {
+      const weight = Math.max(0.2, marker.strength);
+      weightedX += marker.x * weight;
+      weightedY += marker.y * weight;
+      weightSum += weight;
+    }
+    const centerX = weightSum > 1e-6 ? weightedX / weightSum : focusMarkers[focusMarkers.length - 1].x;
+    const centerY = weightSum > 1e-6 ? weightedY / weightSum : focusMarkers[focusMarkers.length - 1].y;
+    this.applyLensShiftFromUv(centerX, centerY);
   }
 
   private applyAiMarkerPatch(patch: AiMarkerPatch): void {

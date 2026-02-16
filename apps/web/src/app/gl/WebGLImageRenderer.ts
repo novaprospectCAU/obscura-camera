@@ -238,10 +238,9 @@ float markerInfluence(vec2 uv, vec4 marker) {
 float accumulateMarkerInfluence(vec2 uv, vec4 markers[6], int markerCount) {
   float influence = 0.0;
   for (int i = 0; i < 6; i += 1) {
-    if (i >= markerCount) {
-      break;
+    if (i < markerCount) {
+      influence += markerInfluence(uv, markers[i]);
     }
-    influence += markerInfluence(uv, markers[i]);
   }
   return clamp(influence, 0.0, 1.0);
 }
@@ -249,12 +248,21 @@ float accumulateMarkerInfluence(vec2 uv, vec4 markers[6], int markerCount) {
 float maxMarkerInfluence(vec2 uv, vec4 markers[6], int markerCount) {
   float influence = 0.0;
   for (int i = 0; i < 6; i += 1) {
-    if (i >= markerCount) {
-      break;
+    if (i < markerCount) {
+      influence = max(influence, markerInfluence(uv, markers[i]));
     }
-    influence = max(influence, markerInfluence(uv, markers[i]));
   }
   return clamp(influence, 0.0, 1.0);
+}
+
+float nearestMarkerDistance(vec2 uv, vec4 markers[6], int markerCount) {
+  float nearest = 1e6;
+  for (int i = 0; i < 6; i += 1) {
+    if (i < markerCount) {
+      nearest = min(nearest, distance(uv, markers[i].xy));
+    }
+  }
+  return nearest;
 }
 
 void main() {
@@ -280,6 +288,10 @@ void main() {
   // Keep selected center sharp; focus distance controls how wide the sharp zone is.
   float focusRadius = mix(0.06, 0.44, focusNorm);
   float sceneRadius = length(vUv - subjectCenter);
+  if (uFocusMarkerCount > 0) {
+    float nearestFocusDistance = nearestMarkerDistance(vUv, uFocusMarkers, uFocusMarkerCount);
+    sceneRadius = min(sceneRadius, nearestFocusDistance);
+  }
   float outsideFocus = max(0.0, sceneRadius - focusRadius);
   float coc = clamp(outsideFocus * 2.4, 0.0, 1.0);
   float focusMarkerInfluence = accumulateMarkerInfluence(vUv, uFocusMarkers, uFocusMarkerCount);
