@@ -24,6 +24,7 @@ const HISTOGRAM_BINS = 64;
 const HISTOGRAM_SIZE = 128;
 const HISTOGRAM_INTERVAL_MS = 200;
 const DEFAULT_MAX_PROCESS_PIXELS = 32_000_000;
+const LENS_SHIFT_MAX_UV_OFFSET = 0.48;
 const DEFAULT_SUBJECT_CONTEXT: RendererSubjectContext = {
   center: { x: 0.5, y: 0.5 },
   box: { x: 0.3, y: 0.3, width: 0.4, height: 0.4 },
@@ -717,12 +718,13 @@ export class WebGLImageRenderer {
 
     this.gl.activeTexture(this.gl.TEXTURE0);
     this.gl.bindTexture(this.gl.TEXTURE_2D, read.texture);
+    const lensShift = this.getLensShiftUvOffset();
     this.gl.uniform1i(this.lensInputUniform, 0);
     this.gl.uniform1f(this.lensDistortionUniform, this.params.distortion);
     this.gl.uniform1f(this.lensFocalLengthUniform, this.params.focalLength);
     this.gl.uniform1f(this.lensChromaUniform, this.params.chromaAberration);
     this.gl.uniform1f(this.lensVignetteUniform, this.params.vignette);
-    this.gl.uniform2f(this.lensShiftUniform, this.params.lensShiftX, this.params.lensShiftY);
+    this.gl.uniform2f(this.lensShiftUniform, lensShift.x, lensShift.y);
     this.gl.uniform2f(
       this.lensSubjectCenterUniform,
       this.subjectContext.center.x,
@@ -748,6 +750,7 @@ export class WebGLImageRenderer {
 
     this.gl.activeTexture(this.gl.TEXTURE0);
     this.gl.bindTexture(this.gl.TEXTURE_2D, read.texture);
+    const lensShift = this.getLensShiftUvOffset();
     this.gl.uniform1i(this.effectsInputUniform, 0);
     this.gl.uniform2f(this.effectsResolutionUniform, this.processWidth, this.processHeight);
     this.gl.uniform2f(
@@ -763,7 +766,7 @@ export class WebGLImageRenderer {
     this.gl.uniform1f(this.effectsIsoUniform, this.params.iso);
     this.gl.uniform1f(this.effectsApertureUniform, this.params.aperture);
     this.gl.uniform1f(this.effectsFocusDistanceUniform, this.params.focusDistance);
-    this.gl.uniform2f(this.effectsLensShiftUniform, this.params.lensShiftX, this.params.lensShiftY);
+    this.gl.uniform2f(this.effectsLensShiftUniform, lensShift.x, lensShift.y);
     this.gl.uniform1f(this.effectsTemperatureUniform, this.params.temperature);
     this.gl.uniform1f(this.effectsTintUniform, this.params.tint);
     this.gl.uniform1f(this.effectsContrastUniform, this.params.contrast);
@@ -1049,6 +1052,15 @@ export class WebGLImageRenderer {
       return 1.5;
     }
     return 1;
+  }
+
+  private getLensShiftUvOffset(): { x: number; y: number } {
+    const weightX = clampNumber(this.params.lensShiftX, -1, 1);
+    const weightY = clampNumber(this.params.lensShiftY, -1, 1);
+    return {
+      x: weightX * LENS_SHIFT_MAX_UV_OFFSET,
+      y: -weightY * LENS_SHIFT_MAX_UV_OFFSET
+    };
   }
 
   private previewModeToUniform(mode: PreviewMode): number {

@@ -158,7 +158,8 @@ const DIAL_MIN_ANGLE_DEG = -140;
 const DIAL_MAX_ANGLE_DEG = 140;
 const DIAL_SWEEP_DEG = DIAL_MAX_ANGLE_DEG - DIAL_MIN_ANGLE_DEG;
 const SUBJECT_ANALYSIS_INTERVAL_MS = 320;
-const LENS_SHIFT_LIMIT = 0.48;
+const LENS_SHIFT_WEIGHT_LIMIT = 1;
+const LENS_SHIFT_MAX_UV_OFFSET = 0.48;
 
 const PARAM_VALUE_LIMITS: Record<NumericParamKey, { min: number; max: number }> = {
   exposureEV: { min: -3, max: 3 },
@@ -167,8 +168,8 @@ const PARAM_VALUE_LIMITS: Record<NumericParamKey, { min: number; max: number }> 
   aperture: { min: 1.4, max: 22 },
   focalLength: { min: 18, max: 120 },
   focusDistance: { min: 0.2, max: 50 },
-  lensShiftX: { min: -LENS_SHIFT_LIMIT, max: LENS_SHIFT_LIMIT },
-  lensShiftY: { min: -LENS_SHIFT_LIMIT, max: LENS_SHIFT_LIMIT },
+  lensShiftX: { min: -LENS_SHIFT_WEIGHT_LIMIT, max: LENS_SHIFT_WEIGHT_LIMIT },
+  lensShiftY: { min: -LENS_SHIFT_WEIGHT_LIMIT, max: LENS_SHIFT_WEIGHT_LIMIT },
   distortion: { min: -0.5, max: 0.5 },
   vignette: { min: 0, max: 1 },
   chromaAberration: { min: 0, max: 1 },
@@ -264,8 +265,8 @@ const PARAM_SLIDER_DEFS: SliderControlDef[] = [
   {
     key: "lensShiftX",
     label: "Lens Shift X",
-    min: -LENS_SHIFT_LIMIT,
-    max: LENS_SHIFT_LIMIT,
+    min: -LENS_SHIFT_WEIGHT_LIMIT,
+    max: LENS_SHIFT_WEIGHT_LIMIT,
     step: 0.001,
     toValue: IDENTITY,
     toRaw: IDENTITY,
@@ -274,8 +275,8 @@ const PARAM_SLIDER_DEFS: SliderControlDef[] = [
   {
     key: "lensShiftY",
     label: "Lens Shift Y",
-    min: -LENS_SHIFT_LIMIT,
-    max: LENS_SHIFT_LIMIT,
+    min: -LENS_SHIFT_WEIGHT_LIMIT,
+    max: LENS_SHIFT_WEIGHT_LIMIT,
     step: 0.001,
     toValue: IDENTITY,
     toRaw: IDENTITY,
@@ -380,8 +381,8 @@ const PARAM_DIAL_VALUES: Record<NumericParamKey, readonly number[]> = {
   aperture: [1.4, 2, 2.8, 4, 5.6, 8, 11, 16, 22],
   focalLength: [18, 24, 28, 35, 50, 70, 85, 105, 120],
   focusDistance: [0.2, 0.3, 0.5, 0.8, 1.2, 1.6, 2.5, 4, 6, 10, 15, 25, 50],
-  lensShiftX: [-0.48, -0.36, -0.24, -0.12, 0, 0.12, 0.24, 0.36, 0.48],
-  lensShiftY: [-0.48, -0.36, -0.24, -0.12, 0, 0.12, 0.24, 0.36, 0.48],
+  lensShiftX: [-1, -0.75, -0.5, -0.25, 0, 0.25, 0.5, 0.75, 1],
+  lensShiftY: [-1, -0.75, -0.5, -0.25, 0, 0.25, 0.5, 0.75, 1],
   distortion: [-0.5, -0.3, -0.15, -0.05, 0, 0.05, 0.15, 0.3, 0.5],
   vignette: [0, 0.15, 0.3, 0.45, 0.6, 0.75, 0.9, 1],
   chromaAberration: [0, 0.05, 0.1, 0.2, 0.35, 0.5, 0.7, 1],
@@ -1938,8 +1939,9 @@ export class CameraLabApp {
     }
 
     const params = state ?? this.params.getState();
-    const lensCenterX = clamp(0.5 + params.lensShiftX, 0.02, 0.98);
-    const lensCenterY = clamp(0.5 + params.lensShiftY, 0.02, 0.98);
+    const lensCenter = lensCenterFromShiftWeights(params.lensShiftX, params.lensShiftY);
+    const lensCenterX = lensCenter.x;
+    const lensCenterY = lensCenter.y;
 
     let focusX = lensCenterX;
     let focusY = lensCenterY;
@@ -2080,8 +2082,8 @@ function toPresetPatch(value: unknown): PresetPatch | null {
     aperture: candidate.aperture,
     focalLength: candidate.focalLength,
     focusDistance: candidate.focusDistance,
-    lensShiftX: clamp(lensShiftX, -LENS_SHIFT_LIMIT, LENS_SHIFT_LIMIT),
-    lensShiftY: clamp(lensShiftY, -LENS_SHIFT_LIMIT, LENS_SHIFT_LIMIT),
+    lensShiftX: clamp(lensShiftX, -LENS_SHIFT_WEIGHT_LIMIT, LENS_SHIFT_WEIGHT_LIMIT),
+    lensShiftY: clamp(lensShiftY, -LENS_SHIFT_WEIGHT_LIMIT, LENS_SHIFT_WEIGHT_LIMIT),
     distortion: candidate.distortion,
     vignette: candidate.vignette,
     chromaAberration: candidate.chromaAberration,
@@ -2110,10 +2112,18 @@ function toSessionPatch(value: unknown): Partial<CameraParams> | null {
   if (isFiniteNumber(candidate.focalLength)) patch.focalLength = candidate.focalLength;
   if (isFiniteNumber(candidate.focusDistance)) patch.focusDistance = candidate.focusDistance;
   if (isFiniteNumber(candidate.lensShiftX)) {
-    patch.lensShiftX = clamp(candidate.lensShiftX, -LENS_SHIFT_LIMIT, LENS_SHIFT_LIMIT);
+    patch.lensShiftX = clamp(
+      candidate.lensShiftX,
+      -LENS_SHIFT_WEIGHT_LIMIT,
+      LENS_SHIFT_WEIGHT_LIMIT
+    );
   }
   if (isFiniteNumber(candidate.lensShiftY)) {
-    patch.lensShiftY = clamp(candidate.lensShiftY, -LENS_SHIFT_LIMIT, LENS_SHIFT_LIMIT);
+    patch.lensShiftY = clamp(
+      candidate.lensShiftY,
+      -LENS_SHIFT_WEIGHT_LIMIT,
+      LENS_SHIFT_WEIGHT_LIMIT
+    );
   }
   if (isFiniteNumber(candidate.distortion)) patch.distortion = candidate.distortion;
   if (isFiniteNumber(candidate.vignette)) patch.vignette = candidate.vignette;
@@ -2292,8 +2302,8 @@ function isMeaningfulNumericChange(key: NumericParamKey, current: number, next: 
     aperture: 0.2,
     focalLength: 2,
     focusDistance: 0.35,
-    lensShiftX: 0.012,
-    lensShiftY: 0.012,
+    lensShiftX: 0.02,
+    lensShiftY: 0.02,
     distortion: 0.03,
     vignette: 0.03,
     chromaAberration: 0.03,
@@ -2888,7 +2898,7 @@ async function requestAiCameraPatch(
           '{"patch":{"exposureEV":number,"shutter":number,"iso":number,"aperture":number,"focalLength":number,"focusDistance":number,"lensShiftX":number,"lensShiftY":number,"distortion":number,"vignette":number,"chromaAberration":number,"temperature":number,"tint":number,"contrast":number,"saturation":number,"sharpen":number,"noiseReduction":number,"toneMap":boolean,"upscaleFactor":number,"upscaleStyle":"balanced"|"enhanced"},"summary":"short text"}',
           "Change at least 3 fields unless user asks for minimal change.",
           "Respect ranges:",
-          "exposureEV[-3..3], shutter[0.000125..0.066667], iso[100..6400], aperture[1.4..22], focalLength[18..120], focusDistance[0.2..50], lensShiftX[-0.48..0.48], lensShiftY[-0.48..0.48], distortion[-0.5..0.5], vignette[0..1], chromaAberration[0..1], temperature[-1..1], tint[-1..1], contrast[0.5..1.5], saturation[0..2], sharpen[0..1], noiseReduction[0..1], upscaleFactor in [1,1.5,2,2.5,3,3.5,4], upscaleStyle in [balanced,enhanced].",
+          "exposureEV[-3..3], shutter[0.000125..0.066667], iso[100..6400], aperture[1.4..22], focalLength[18..120], focusDistance[0.2..50], lensShiftX[-1..1], lensShiftY[-1..1], distortion[-0.5..0.5], vignette[0..1], chromaAberration[0..1], temperature[-1..1], tint[-1..1], contrast[0.5..1.5], saturation[0..2], sharpen[0..1], noiseReduction[0..1], upscaleFactor in [1,1.5,2,2.5,3,3.5,4], upscaleStyle in [balanced,enhanced].",
           "Use subjectContext to protect subject exposure and apparent focus.",
           "If subjectContext.brightness is high, avoid brightening aggressively.",
           "If subjectContext.backlit is true, prefer modest EV increase and tone mapping over extreme contrast jumps.",
@@ -3154,6 +3164,15 @@ function waitForNextFrame(): Promise<void> {
 
 function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
+}
+
+function lensCenterFromShiftWeights(shiftX: number, shiftY: number): { x: number; y: number } {
+  const offsetX = clamp(shiftX, -LENS_SHIFT_WEIGHT_LIMIT, LENS_SHIFT_WEIGHT_LIMIT) * LENS_SHIFT_MAX_UV_OFFSET;
+  const offsetY = clamp(shiftY, -LENS_SHIFT_WEIGHT_LIMIT, LENS_SHIFT_WEIGHT_LIMIT) * -LENS_SHIFT_MAX_UV_OFFSET;
+  return {
+    x: clamp(0.5 + offsetX, 0.02, 0.98),
+    y: clamp(0.5 + offsetY, 0.02, 0.98)
+  };
 }
 
 function readStorage(key: string): string | null {
