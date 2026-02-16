@@ -82,7 +82,7 @@ bool outsideUv(vec2 uv) {
 }
 
 vec2 applyLensUv(vec2 uv) {
-  vec2 lensCenter = clamp(vec2(0.5) + uLensShift, vec2(0.1), vec2(0.9));
+  vec2 lensCenter = clamp(vec2(0.5) + uLensShift, vec2(0.02), vec2(0.98));
   vec2 centered = uv - lensCenter;
   float radius2 = dot(centered, centered);
   vec2 distortedUv = uv + centered * radius2 * (uDistortion * 0.7);
@@ -97,7 +97,7 @@ vec3 sampleWithChroma(vec2 uv) {
     return BG_COLOR;
   }
 
-  vec2 lensCenter = clamp(vec2(0.5) + uLensShift, vec2(0.1), vec2(0.9));
+  vec2 lensCenter = clamp(vec2(0.5) + uLensShift, vec2(0.02), vec2(0.98));
   vec2 centerDir = normalize((uv - lensCenter) + vec2(1e-5));
   vec2 caOffset = centerDir * uChromaAberration * 0.0035;
 
@@ -115,11 +115,12 @@ void main() {
   }
 
   vec3 color = sampleWithChroma(lensUv);
-  vec2 lensCenter = clamp(vec2(0.5) + uLensShift, vec2(0.1), vec2(0.9));
+  vec2 lensCenter = clamp(vec2(0.5) + uLensShift, vec2(0.02), vec2(0.98));
+  float subjectBlend = clamp(uSubjectStrength * 0.62, 0.0, 1.0);
   vec2 vignetteCenter = mix(
     lensCenter,
     clamp(uSubjectCenter, 0.0, 1.0),
-    clamp(uSubjectStrength, 0.0, 1.0)
+    subjectBlend
   );
   float radius = length(lensUv - vignetteCenter) * 1.4142;
   float vignetteFactor = 1.0 - (uVignette * smoothstep(0.25, 1.0, radius));
@@ -212,9 +213,10 @@ void main() {
   float apertureNorm = clamp((uAperture - 1.4) / (22.0 - 1.4), 0.0, 1.0);
   float apertureWide = 1.0 - apertureNorm;
   float focusNorm = clamp((uFocusDistance - 0.2) / (50.0 - 0.2), 0.0, 1.0);
-  vec2 lensCenter = clamp(vec2(0.5) + uLensShift, vec2(0.1), vec2(0.9));
+  vec2 lensCenter = clamp(vec2(0.5) + uLensShift, vec2(0.02), vec2(0.98));
   float subjectStrength = clamp(uSubjectStrength, 0.0, 1.0);
-  vec2 subjectCenter = mix(lensCenter, clamp(uSubjectCenter, 0.0, 1.0), subjectStrength);
+  float subjectBlend = subjectStrength * 0.62;
+  vec2 subjectCenter = mix(lensCenter, clamp(uSubjectCenter, 0.0, 1.0), subjectBlend);
   vec2 subjectBoxMin = clamp(uSubjectBox.xy, vec2(0.0), vec2(0.98));
   vec2 subjectBoxSize = clamp(uSubjectBox.zw, vec2(0.02), vec2(1.0));
   vec4 safeSubjectBox = vec4(
@@ -225,7 +227,7 @@ void main() {
   float focusPlane = focusNorm;
   float sceneDepth = clamp(length(vUv - subjectCenter) * 1.8, 0.0, 1.0);
   float coc = abs(sceneDepth - focusPlane);
-  float protectedSubject = subjectMask(vUv, safeSubjectBox) * subjectStrength;
+  float protectedSubject = subjectMask(vUv, safeSubjectBox) * subjectBlend;
   coc = mix(coc, coc * 0.35, protectedSubject);
   float focusBlurStrength = mix(1.2, 9.0, apertureWide);
   float blurPixels = shutterNorm * 5.0 + coc * focusBlurStrength;
