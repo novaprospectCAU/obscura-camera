@@ -46,6 +46,7 @@ type PresetPatch = Pick<
   | "sharpen"
   | "noiseReduction"
   | "toneMap"
+  | "upscaleStyle"
 >;
 
 type SliderControlDef = {
@@ -1731,7 +1732,8 @@ function extractPresetPatch(state: Readonly<CameraParams>): PresetPatch {
     saturation: state.saturation,
     sharpen: state.sharpen,
     noiseReduction: state.noiseReduction,
-    toneMap: state.toneMap
+    toneMap: state.toneMap,
+    upscaleStyle: state.upscaleStyle
   };
 }
 
@@ -1764,6 +1766,7 @@ function toPresetPatch(value: unknown): PresetPatch | null {
   const noiseReduction = isFiniteNumber(candidate.noiseReduction)
     ? candidate.noiseReduction
     : DEFAULT_CAMERA_PARAMS.noiseReduction;
+  const upscaleStyle = parseUpscaleStyle(candidate.upscaleStyle);
 
   return {
     exposureEV: candidate.exposureEV,
@@ -1781,7 +1784,8 @@ function toPresetPatch(value: unknown): PresetPatch | null {
     saturation,
     sharpen,
     noiseReduction,
-    toneMap: candidate.toneMap
+    toneMap: candidate.toneMap,
+    upscaleStyle
   };
 }
 
