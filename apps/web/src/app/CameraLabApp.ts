@@ -1506,13 +1506,18 @@ export class CameraLabApp {
       return;
     }
 
+    const currentFocalLength = this.params.getState().focalLength;
+
     if (parsed.kind === "builtin") {
       const preset = CAMERA_PRESETS[parsed.name];
-      this.params.patch(preset);
+      this.params.patch({
+        ...preset,
+        focalLength: currentFocalLength
+      });
       if (this.elements) {
         this.elements.presetNameInput.value = "";
       }
-      this.setStatus(`Applied ${parsed.name} preset.`);
+      this.setStatus(`Applied ${parsed.name} preset (kept focal length).`);
       return;
     }
 
@@ -1522,11 +1527,14 @@ export class CameraLabApp {
       return;
     }
 
-    this.params.patch(preset);
+    this.params.patch({
+      ...preset,
+      focalLength: currentFocalLength
+    });
     if (this.elements) {
       this.elements.presetNameInput.value = parsed.name;
     }
-    this.setStatus(`Applied custom preset: ${parsed.name}`);
+    this.setStatus(`Applied custom preset: ${parsed.name} (kept focal length).`);
   }
 
   private saveCurrentAsCustomPreset(requestedName: string): void {

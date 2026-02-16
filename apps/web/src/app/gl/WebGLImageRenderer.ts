@@ -137,7 +137,7 @@ float hash12(vec2 p) {
 }
 
 vec3 filmic(vec3 color) {
-  vec3 x = max(vec3(0.0), color - 0.004);
+  vec3 x = max(vec3(0.0), color * 0.86 - 0.004);
   return (x * (6.2 * x + 0.5)) / (x * (6.2 * x + 1.7) + 0.06);
 }
 
@@ -217,6 +217,7 @@ void main() {
 
   if (uToneMapEnabled > 0.5) {
     color = filmic(color);
+    color *= 0.92;
   }
 
   color = (color - 0.5) * uContrast + 0.5;
