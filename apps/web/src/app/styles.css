@@ -231,6 +231,14 @@ body {
   padding: 0.45rem 0.5rem;
 }
 
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 0.83rem;
+}
+
 .param-section {
   gap: 0.45rem;
 }

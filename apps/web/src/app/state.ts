@@ -16,8 +16,11 @@ export type CameraParams = {
   tint: number;
   contrast: number;
   saturation: number;
+  sharpen: number;
+  noiseReduction: number;
   toneMap: boolean;
   upscaleFactor: UpscaleFactor;
+  previewScale: number;
   previewMode: PreviewMode;
   splitPosition: number;
   histogramMode: HistogramMode;
@@ -37,8 +40,11 @@ export const DEFAULT_CAMERA_PARAMS: CameraParams = {
   tint: 0,
   contrast: 1,
   saturation: 1,
+  sharpen: 0.22,
+  noiseReduction: 0.15,
   toneMap: false,
   upscaleFactor: 1,
+  previewScale: 1,
   previewMode: "processed",
   splitPosition: 0.5,
   histogramMode: "composite"
@@ -59,7 +65,9 @@ export const CAMERA_PRESETS: Record<CameraPresetName, Partial<CameraParams>> = {
     chromaAberration: 0.08,
     temperature: 0.12,
     contrast: 1.04,
-    saturation: 1.06
+    saturation: 1.06,
+    sharpen: 0.28,
+    noiseReduction: 0.1
   },
   Landscape: {
     exposureEV: -0.1,
@@ -73,7 +81,9 @@ export const CAMERA_PRESETS: Record<CameraPresetName, Partial<CameraParams>> = {
     chromaAberration: 0.03,
     temperature: -0.04,
     contrast: 1.08,
-    saturation: 1.18
+    saturation: 1.18,
+    sharpen: 0.35,
+    noiseReduction: 0.08
   },
   Night: {
     exposureEV: 1.2,
@@ -88,7 +98,9 @@ export const CAMERA_PRESETS: Record<CameraPresetName, Partial<CameraParams>> = {
     temperature: -0.08,
     tint: 0.04,
     contrast: 0.93,
-    saturation: 0.88
+    saturation: 0.88,
+    sharpen: 0.14,
+    noiseReduction: 0.38
   }
 };
 

@@ -121,6 +121,8 @@ uniform float uTemperature;
 uniform float uTint;
 uniform float uContrast;
 uniform float uSaturation;
+uniform float uSharpen;
+uniform float uNoiseReduction;
 uniform float uToneMapEnabled;
 uniform float uFrame;
 
@@ -139,6 +141,15 @@ vec3 filmic(vec3 color) {
 
 vec3 sampleInput(vec2 uv) {
   return texture(uInput, clamp(uv, 0.0, 1.0)).rgb;
+}
+
+vec3 crossBlur(vec2 uv, vec2 step) {
+  vec3 sum = sampleInput(uv) * 0.4;
+  sum += sampleInput(uv + vec2(step.x, 0.0)) * 0.15;
+  sum += sampleInput(uv - vec2(step.x, 0.0)) * 0.15;
+  sum += sampleInput(uv + vec2(0.0, step.y)) * 0.15;
+  sum += sampleInput(uv - vec2(0.0, step.y)) * 0.15;
+  return sum;
 }
 
 vec3 applyWhiteBalance(vec3 color) {
@@ -182,6 +193,15 @@ void main() {
   float isoNorm = clamp((uIso - 100.0) / (6400.0 - 100.0), 0.0, 1.0);
   float grain = hash12(gl_FragCoord.xy + vec2(uFrame * 0.173, uFrame * 0.319)) - 0.5;
   color += grain * (isoNorm * 0.12) * (0.35 + color);
+
+  vec2 pixelStep = vec2(1.0 / uResolution.x, 1.0 / uResolution.y);
+  vec3 denoised = crossBlur(vUv, pixelStep * (0.8 + isoNorm));
+  float nrAmount = clamp(uNoiseReduction * (0.35 + isoNorm * 0.85), 0.0, 0.95);
+  color = mix(color, denoised, nrAmount);
+
+  vec3 localAverage = crossBlur(vUv, pixelStep * 0.85);
+  vec3 detail = color - localAverage;
+  color += detail * (uSharpen * 1.35);
   color = applyWhiteBalance(color);
 
   if (uToneMapEnabled > 0.5) {
@@ -286,6 +306,8 @@ export class WebGLImageRenderer {
   private readonly effectsTintUniform: WebGLUniformLocation;
   private readonly effectsContrastUniform: WebGLUniformLocation;
   private readonly effectsSaturationUniform: WebGLUniformLocation;
+  private readonly effectsSharpenUniform: WebGLUniformLocation;
+  private readonly effectsNoiseReductionUniform: WebGLUniformLocation;
   private readonly effectsToneMapUniform: WebGLUniformLocation;
   private readonly effectsFrameUniform: WebGLUniformLocation;
 
@@ -359,6 +381,8 @@ export class WebGLImageRenderer {
     this.effectsTintUniform = this.requireUniform(this.effectsProgram, "uTint");
     this.effectsContrastUniform = this.requireUniform(this.effectsProgram, "uContrast");
     this.effectsSaturationUniform = this.requireUniform(this.effectsProgram, "uSaturation");
+    this.effectsSharpenUniform = this.requireUniform(this.effectsProgram, "uSharpen");
+    this.effectsNoiseReductionUniform = this.requireUniform(this.effectsProgram, "uNoiseReduction");
     this.effectsToneMapUniform = this.requireUniform(this.effectsProgram, "uToneMapEnabled");
     this.effectsFrameUniform = this.requireUniform(this.effectsProgram, "uFrame");
 
@@ -549,6 +573,8 @@ export class WebGLImageRenderer {
     this.gl.uniform1f(this.effectsTintUniform, this.params.tint);
     this.gl.uniform1f(this.effectsContrastUniform, this.params.contrast);
     this.gl.uniform1f(this.effectsSaturationUniform, this.params.saturation);
+    this.gl.uniform1f(this.effectsSharpenUniform, this.params.sharpen);
+    this.gl.uniform1f(this.effectsNoiseReductionUniform, this.params.noiseReduction);
     this.gl.uniform1f(this.effectsToneMapUniform, this.params.toneMap ? 1 : 0);
     this.gl.uniform1f(this.effectsFrameUniform, this.frameIndex);
 
@@ -747,8 +773,9 @@ export class WebGLImageRenderer {
 
   private updateProcessSize(): void {
     const upscale = this.coerceUpscaleFactor(this.params.upscaleFactor);
-    let nextWidth = Math.max(1, Math.floor(this.sourceWidth * upscale));
-    let nextHeight = Math.max(1, Math.floor(this.sourceHeight * upscale));
+    const previewScale = clampNumber(this.params.previewScale, 0.5, 1);
+    let nextWidth = Math.max(1, Math.floor(this.sourceWidth * upscale * previewScale));
+    let nextHeight = Math.max(1, Math.floor(this.sourceHeight * upscale * previewScale));
 
     const maxDim = Math.max(nextWidth, nextHeight);
     if (maxDim > MAX_PROCESS_DIMENSION) {
@@ -913,4 +940,8 @@ export class WebGLImageRenderer {
 
     return uniform;
   }
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }

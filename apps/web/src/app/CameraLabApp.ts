@@ -23,7 +23,9 @@ type NumericParamKey =
   | "temperature"
   | "tint"
   | "contrast"
-  | "saturation";
+  | "saturation"
+  | "sharpen"
+  | "noiseReduction";
 
 type PresetPatch = Pick<
   CameraParams,
@@ -40,6 +42,8 @@ type PresetPatch = Pick<
   | "tint"
   | "contrast"
   | "saturation"
+  | "sharpen"
+  | "noiseReduction"
   | "toneMap"
 >;
 
@@ -80,6 +84,10 @@ type AppElements = {
   splitReadout: HTMLOutputElement;
   toneMapToggle: HTMLInputElement;
   upscaleSelect: HTMLSelectElement;
+  performanceSelect: HTMLSelectElement;
+  autoExposureToggle: HTMLInputElement;
+  autoFocusToggle: HTMLInputElement;
+  aeAfLockToggle: HTMLInputElement;
   histogramModeSelect: HTMLSelectElement;
   paramControls: HTMLElement;
   histogramCanvas: HTMLCanvasElement;
@@ -247,6 +255,26 @@ const PARAM_SLIDER_DEFS: SliderControlDef[] = [
     toValue: IDENTITY,
     toRaw: IDENTITY,
     format: (value) => value.toFixed(2)
+  },
+  {
+    key: "sharpen",
+    label: "Sharpen",
+    min: 0,
+    max: 1,
+    step: 0.01,
+    toValue: IDENTITY,
+    toRaw: IDENTITY,
+    format: (value) => value.toFixed(2)
+  },
+  {
+    key: "noiseReduction",
+    label: "Noise Reduction",
+    min: 0,
+    max: 1,
+    step: 0.01,
+    toValue: IDENTITY,
+    toRaw: IDENTITY,
+    format: (value) => value.toFixed(2)
   }
 ];
 
@@ -265,6 +293,8 @@ export class CameraLabApp {
   private unsubscribeParams?: () => void;
   private lastHistogramVersion = -1;
   private customPresets: Record<string, PresetPatch> = {};
+  private loadedImage?: HTMLImageElement;
+  private readonly meterCanvas = document.createElement("canvas");
 
   private readonly onResize = () => {
     this.renderer?.resize();
@@ -382,6 +412,26 @@ export class CameraLabApp {
                 <option value="4">4x</option>
               </select>
             </label>
+            <label class="upscale-row" for="performance-select">
+              <span>Performance</span>
+              <select id="performance-select">
+                <option value="1">Quality</option>
+                <option value="0.75">Balanced</option>
+                <option value="0.5">Fast</option>
+              </select>
+            </label>
+            <label class="toggle-row" for="auto-exposure-toggle">
+              <span>Auto Exposure (tap)</span>
+              <input id="auto-exposure-toggle" type="checkbox" checked />
+            </label>
+            <label class="toggle-row" for="auto-focus-toggle">
+              <span>Auto Focus (tap)</span>
+              <input id="auto-focus-toggle" type="checkbox" checked />
+            </label>
+            <label class="toggle-row" for="aeaf-lock-toggle">
+              <span>AE/AF Lock</span>
+              <input id="aeaf-lock-toggle" type="checkbox" />
+            </label>
             <p class="hint">Shortcuts: <code>Space</code> A/B, <code>S</code> Split, <code>R</code> Reset</p>
           </section>
 
@@ -422,6 +472,7 @@ export class CameraLabApp {
     this.bindSourceButtons();
     this.bindPresetControls();
     this.bindPreviewControls();
+    this.bindMeteringControls();
     this.bindSnapshotControl();
 
     this.loadCustomPresets();
@@ -488,6 +539,10 @@ export class CameraLabApp {
       splitReadout: this.requireElement<HTMLOutputElement>("#split-readout"),
       toneMapToggle: this.requireElement<HTMLInputElement>("#tone-map-toggle"),
       upscaleSelect: this.requireElement<HTMLSelectElement>("#upscale-select"),
+      performanceSelect: this.requireElement<HTMLSelectElement>("#performance-select"),
+      autoExposureToggle: this.requireElement<HTMLInputElement>("#auto-exposure-toggle"),
+      autoFocusToggle: this.requireElement<HTMLInputElement>("#auto-focus-toggle"),
+      aeAfLockToggle: this.requireElement<HTMLInputElement>("#aeaf-lock-toggle"),
       histogramModeSelect: this.requireElement<HTMLSelectElement>("#histogram-mode-select"),
       paramControls: this.requireElement<HTMLElement>("#param-controls"),
       histogramCanvas: this.requireElement<HTMLCanvasElement>("#histogram-canvas"),
@@ -579,7 +634,7 @@ export class CameraLabApp {
     }
 
     this.elements.snapshotButton.addEventListener("click", () => {
-      this.captureSnapshotPng();
+      void this.captureSnapshotPng();
     });
   }
 
@@ -632,6 +687,7 @@ export class CameraLabApp {
       splitSlider,
       toneMapToggle,
       upscaleSelect,
+      performanceSelect,
       histogramModeSelect
     } = this.elements;
 
@@ -653,9 +709,139 @@ export class CameraLabApp {
     upscaleSelect.addEventListener("change", () => {
       this.params.set("upscaleFactor", parseUpscaleFactor(upscaleSelect.value));
     });
+    performanceSelect.addEventListener("change", () => {
+      this.params.set("previewScale", parsePreviewScale(performanceSelect.value));
+    });
     histogramModeSelect.addEventListener("change", () => {
       this.params.set("histogramMode", histogramModeSelect.value as HistogramMode);
     });
+  }
+
+  private bindMeteringControls(): void {
+    if (!this.elements) {
+      return;
+    }
+
+    this.elements.canvas.addEventListener("pointerdown", (event) => {
+      this.handleMeteringTap(event);
+    });
+  }
+
+  private handleMeteringTap(event: PointerEvent): void {
+    if (!this.elements) {
+      return;
+    }
+    if (this.elements.aeAfLockToggle.checked) {
+      this.setStatus("AE/AF is locked.");
+      return;
+    }
+
+    const shouldAutoExposure = this.elements.autoExposureToggle.checked;
+    const shouldAutoFocus = this.elements.autoFocusToggle.checked;
+    if (!shouldAutoExposure && !shouldAutoFocus) {
+      return;
+    }
+
+    const sample = this.sampleMeteringAt(event.clientX, event.clientY);
+    if (!sample) {
+      return;
+    }
+
+    const patch: Partial<CameraParams> = {};
+    if (shouldAutoExposure) {
+      patch.exposureEV = computeAutoExposure(sample.luminance);
+    }
+    if (shouldAutoFocus) {
+      patch.focusDistance = computeAutoFocusDistance(sample.depthNorm);
+    }
+
+    if (Object.keys(patch).length === 0) {
+      return;
+    }
+
+    this.params.patch(patch);
+
+    const updates: string[] = [];
+    if (patch.exposureEV !== undefined) {
+      updates.push(`EV ${formatSigned(patch.exposureEV, 2)}`);
+    }
+    if (patch.focusDistance !== undefined) {
+      updates.push(`Focus ${patch.focusDistance.toFixed(1)}m`);
+    }
+    this.setStatus(`Metered: ${updates.join(", ")}`);
+  }
+
+  private sampleMeteringAt(clientX: number, clientY: number): { luminance: number; depthNorm: number } | null {
+    if (!this.elements) {
+      return null;
+    }
+
+    const dims = this.getActiveSourceDimensions();
+    if (!dims) {
+      this.setStatus("No active source for metering.");
+      return null;
+    }
+
+    const rect = this.elements.canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      return null;
+    }
+
+    const nx = clamp((clientX - rect.left) / rect.width, 0, 1);
+    const ny = clamp((clientY - rect.top) / rect.height, 0, 1);
+    const uv = mapCanvasToImageUv(nx, ny, rect.width, rect.height, dims.width, dims.height);
+    if (!uv) {
+      return null;
+    }
+
+    const luminance = this.sampleSourceLuminance(uv.x, uv.y, dims.width, dims.height);
+    if (luminance === null) {
+      return null;
+    }
+
+    const depthNorm = clamp(Math.hypot(uv.x - 0.5, uv.y - 0.5) * 1.8, 0, 1);
+    return { luminance, depthNorm };
+  }
+
+  private getActiveSourceDimensions(): { width: number; height: number } | null {
+    if (this.sourceMode === "webcam" && this.webcamVideo) {
+      return {
+        width: Math.max(1, this.webcamVideo.videoWidth || 1),
+        height: Math.max(1, this.webcamVideo.videoHeight || 1)
+      };
+    }
+
+    if (this.loadedImage) {
+      return {
+        width: Math.max(1, this.loadedImage.naturalWidth || 1),
+        height: Math.max(1, this.loadedImage.naturalHeight || 1)
+      };
+    }
+
+    return null;
+  }
+
+  private sampleSourceLuminance(uvX: number, uvY: number, width: number, height: number): number | null {
+    const target = this.sourceMode === "webcam" ? this.webcamVideo : this.loadedImage;
+    if (!target) {
+      return null;
+    }
+
+    this.meterCanvas.width = width;
+    this.meterCanvas.height = height;
+    const ctx = this.meterCanvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) {
+      return null;
+    }
+
+    ctx.drawImage(target, 0, 0, width, height);
+    const sampleX = Math.min(width - 1, Math.max(0, Math.floor(uvX * (width - 1))));
+    const sampleY = Math.min(height - 1, Math.max(0, Math.floor(uvY * (height - 1))));
+    const pixel = ctx.getImageData(sampleX, sampleY, 1, 1).data;
+    const r = srgbToLinear(pixel[0] / 255);
+    const g = srgbToLinear(pixel[1] / 255);
+    const b = srgbToLinear(pixel[2] / 255);
+    return clamp(r * 0.2126 + g * 0.7152 + b * 0.0722, 0.001, 1);
   }
 
   private bindDragAndDrop(): void {
@@ -718,6 +904,7 @@ export class CameraLabApp {
     this.elements.splitControl.classList.toggle("is-hidden", state.previewMode !== "split");
     this.elements.toneMapToggle.checked = state.toneMap;
     this.elements.upscaleSelect.value = `${state.upscaleFactor}`;
+    this.elements.performanceSelect.value = `${state.previewScale}`;
     this.elements.histogramModeSelect.value = state.histogramMode;
   }
 
@@ -745,6 +932,7 @@ export class CameraLabApp {
       this.renderer.render();
       this.drawHistogram();
 
+      this.loadedImage = image;
       this.hasImage = true;
       this.elements.fileName.textContent = file.name;
       this.setStatus(`Loaded ${file.name}`);
@@ -974,43 +1162,46 @@ export class CameraLabApp {
     drawChannel(histogram.b, "rgba(92, 148, 255, 0.30)");
   }
 
-  private captureSnapshotPng(): void {
+  private async captureSnapshotPng(): Promise<void> {
     if (!this.elements) {
       return;
     }
 
-    const sourceCanvas = this.elements.canvas;
-    const factor = this.params.getState().upscaleFactor;
-    const canvas = createSnapshotCanvas(sourceCanvas, factor);
-    const filename = `obscura-shot-${new Date().toISOString().replace(/[:.]/g, "-")}.png`;
-    const triggerDownload = (url: string) => {
+    const previousPreviewScale = this.params.getState().previewScale;
+    let restored = false;
+
+    try {
+      if (previousPreviewScale < 1) {
+        this.params.set("previewScale", 1);
+        await waitForNextFrame();
+      }
+
+      const sourceCanvas = this.elements.canvas;
+      const factor = this.params.getState().upscaleFactor;
+      const canvas = createSnapshotCanvas(sourceCanvas, factor);
+      const blob = await canvasToPngBlob(canvas);
+      if (!blob) {
+        this.setStatus("Failed to capture snapshot.");
+        return;
+      }
+
+      const filename = `obscura-shot-${new Date().toISOString().replace(/[:.]/g, "-")}.png`;
+      const blobUrl = URL.createObjectURL(blob);
       const link = document.createElement("a");
-      link.href = url;
+      link.href = blobUrl;
       link.download = filename;
       link.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    };
-
-    if (canvas.toBlob) {
-      canvas.toBlob((blob) => {
-        if (!blob) {
-          this.setStatus("Failed to capture snapshot.");
-          return;
-        }
-
-        const blobUrl = URL.createObjectURL(blob);
-        triggerDownload(blobUrl);
-        this.setStatus(`Saved snapshot: ${filename}`);
-      }, "image/png");
-      return;
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+      this.setStatus(`Saved snapshot: ${filename}`);
+    } finally {
+      if (previousPreviewScale < 1) {
+        this.params.set("previewScale", previousPreviewScale);
+        restored = true;
+      }
+      if (restored) {
+        await waitForNextFrame();
+      }
     }
-
-    const dataUrl = canvas.toDataURL("image/png");
-    const link = document.createElement("a");
-    link.href = dataUrl;
-    link.download = filename;
-    link.click();
-    this.setStatus(`Saved snapshot: ${filename}`);
   }
 
   private applyPresetSelection(selection: string): void {
@@ -1244,6 +1435,8 @@ function extractPresetPatch(state: Readonly<CameraParams>): PresetPatch {
     tint: state.tint,
     contrast: state.contrast,
     saturation: state.saturation,
+    sharpen: state.sharpen,
+    noiseReduction: state.noiseReduction,
     toneMap: state.toneMap
   };
 }
@@ -1273,6 +1466,10 @@ function toPresetPatch(value: unknown): PresetPatch | null {
   const tint = isFiniteNumber(candidate.tint) ? candidate.tint : 0;
   const contrast = isFiniteNumber(candidate.contrast) ? candidate.contrast : 1;
   const saturation = isFiniteNumber(candidate.saturation) ? candidate.saturation : 1;
+  const sharpen = isFiniteNumber(candidate.sharpen) ? candidate.sharpen : DEFAULT_CAMERA_PARAMS.sharpen;
+  const noiseReduction = isFiniteNumber(candidate.noiseReduction)
+    ? candidate.noiseReduction
+    : DEFAULT_CAMERA_PARAMS.noiseReduction;
 
   return {
     exposureEV: candidate.exposureEV,
@@ -1288,6 +1485,8 @@ function toPresetPatch(value: unknown): PresetPatch | null {
     tint,
     contrast,
     saturation,
+    sharpen,
+    noiseReduction,
     toneMap: candidate.toneMap
   };
 }
@@ -1312,8 +1511,13 @@ function toSessionPatch(value: unknown): Partial<CameraParams> | null {
   if (isFiniteNumber(candidate.tint)) patch.tint = candidate.tint;
   if (isFiniteNumber(candidate.contrast)) patch.contrast = candidate.contrast;
   if (isFiniteNumber(candidate.saturation)) patch.saturation = candidate.saturation;
+  if (isFiniteNumber(candidate.sharpen)) patch.sharpen = clamp(candidate.sharpen, 0, 1);
+  if (isFiniteNumber(candidate.noiseReduction)) {
+    patch.noiseReduction = clamp(candidate.noiseReduction, 0, 1);
+  }
   if (typeof candidate.toneMap === "boolean") patch.toneMap = candidate.toneMap;
   if (isFiniteNumber(candidate.upscaleFactor)) patch.upscaleFactor = coerceUpscaleFactor(candidate.upscaleFactor);
+  if (isFiniteNumber(candidate.previewScale)) patch.previewScale = parsePreviewScale(`${candidate.previewScale}`);
   if (
     candidate.previewMode === "original" ||
     candidate.previewMode === "processed" ||
@@ -1364,6 +1568,67 @@ function coerceUpscaleFactor(value: number): UpscaleFactor {
   return 1;
 }
 
+function parsePreviewScale(raw: string): number {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) {
+    return 1;
+  }
+  if (parsed <= 0.5) {
+    return 0.5;
+  }
+  if (parsed <= 0.75) {
+    return 0.75;
+  }
+  return 1;
+}
+
+function mapCanvasToImageUv(
+  normalizedX: number,
+  normalizedY: number,
+  canvasWidth: number,
+  canvasHeight: number,
+  imageWidth: number,
+  imageHeight: number
+): { x: number; y: number } | null {
+  const imageAspect = imageWidth / imageHeight;
+  const canvasAspect = canvasWidth / canvasHeight;
+
+  let x = normalizedX;
+  let y = normalizedY;
+
+  if (canvasAspect > imageAspect) {
+    const xScale = imageAspect / canvasAspect;
+    x = (normalizedX - 0.5) / xScale + 0.5;
+  } else {
+    const yScale = canvasAspect / imageAspect;
+    y = (normalizedY - 0.5) / yScale + 0.5;
+  }
+
+  if (x < 0 || x > 1 || y < 0 || y > 1) {
+    return null;
+  }
+
+  return { x, y };
+}
+
+function computeAutoExposure(luminance: number): number {
+  const safeLuminance = Math.max(0.005, luminance);
+  const targetLuminance = 0.38;
+  return clamp(Math.log2(targetLuminance / safeLuminance), -3, 3);
+}
+
+function computeAutoFocusDistance(depthNorm: number): number {
+  const focusNorm = clamp((depthNorm - 0.12) / (0.95 - 0.12), 0, 1);
+  return 0.2 + focusNorm * (50 - 0.2);
+}
+
+function srgbToLinear(value: number): number {
+  if (value <= 0.04045) {
+    return value / 12.92;
+  }
+  return Math.pow((value + 0.055) / 1.055, 2.4);
+}
+
 function createSnapshotCanvas(source: HTMLCanvasElement, factor: UpscaleFactor): HTMLCanvasElement {
   if (factor === 1) {
     return source;
@@ -1389,6 +1654,26 @@ function createSnapshotCanvas(source: HTMLCanvasElement, factor: UpscaleFactor):
   ctx.imageSmoothingQuality = "high";
   ctx.drawImage(source, 0, 0, width, height);
   return target;
+}
+
+function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob | null> {
+  if (canvas.toBlob) {
+    return new Promise((resolve) => {
+      canvas.toBlob((blob) => {
+        resolve(blob);
+      }, "image/png");
+    });
+  }
+
+  return fetch(canvas.toDataURL("image/png"))
+    .then((response) => response.blob())
+    .catch(() => null);
+}
+
+function waitForNextFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => resolve());
+  });
 }
 
 function readStorage(key: string): string | null {
