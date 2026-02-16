@@ -722,8 +722,24 @@ export class CameraLabApp {
       return;
     }
 
-    this.elements.canvas.addEventListener("pointerdown", (event) => {
+    const { canvas, autoExposureToggle, autoFocusToggle, aeAfLockToggle } = this.elements;
+
+    canvas.addEventListener("pointerdown", (event) => {
       this.handleMeteringTap(event);
+    });
+
+    aeAfLockToggle.addEventListener("change", () => {
+      this.setStatus(aeAfLockToggle.checked ? "AE/AF lock enabled." : "AE/AF lock released.");
+    });
+
+    autoExposureToggle.addEventListener("change", () => {
+      const state = autoExposureToggle.checked ? "enabled" : "disabled";
+      this.setStatus(`Auto Exposure ${state}.`);
+    });
+
+    autoFocusToggle.addEventListener("change", () => {
+      const state = autoFocusToggle.checked ? "enabled" : "disabled";
+      this.setStatus(`Auto Focus ${state}.`);
     });
   }
 
