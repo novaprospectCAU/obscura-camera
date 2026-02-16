@@ -47,6 +47,16 @@ type PresetPatch = Pick<
   | "upscaleStyle"
 >;
 
+type AiSuggestedPatch = Partial<
+  Pick<
+    CameraParams,
+    | NumericParamKey
+    | "toneMap"
+    | "upscaleFactor"
+    | "upscaleStyle"
+  >
+>;
+
 type SliderControlDef = {
   key: NumericParamKey;
   label: string;
@@ -89,6 +99,9 @@ type AppElements = {
   presetNameInput: HTMLInputElement;
   presetSaveButton: HTMLButtonElement;
   presetDeleteButton: HTMLButtonElement;
+  aiApiKeyInput: HTMLInputElement;
+  aiPromptInput: HTMLTextAreaElement;
+  aiApplyButton: HTMLButtonElement;
   previewOriginalButton: HTMLButtonElement;
   previewProcessedButton: HTMLButtonElement;
   previewSplitButton: HTMLButtonElement;
@@ -116,12 +129,33 @@ type AppElements = {
 const SESSION_STORAGE_KEY = "obscura.session.v1";
 const CUSTOM_PRESETS_STORAGE_KEY = "obscura.custom-presets.v1";
 const CONTROL_THEME_STORAGE_KEY = "obscura.control-theme.v1";
+const AI_API_KEY_STORAGE_KEY = "obscura.ai-api-key.v1";
+const OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
+const OPENAI_MODEL = "gpt-4.1-mini";
 const IDENTITY = (value: number): number => value;
 const SHUTTER_MIN = 1 / 8000;
 const SHUTTER_MAX = 1 / 15;
 const DIAL_MIN_ANGLE_DEG = -140;
 const DIAL_MAX_ANGLE_DEG = 140;
 const DIAL_SWEEP_DEG = DIAL_MAX_ANGLE_DEG - DIAL_MIN_ANGLE_DEG;
+
+const PARAM_VALUE_LIMITS: Record<NumericParamKey, { min: number; max: number }> = {
+  exposureEV: { min: -3, max: 3 },
+  shutter: { min: SHUTTER_MIN, max: SHUTTER_MAX },
+  iso: { min: 100, max: 6400 },
+  aperture: { min: 1.4, max: 22 },
+  focalLength: { min: 18, max: 120 },
+  focusDistance: { min: 0.2, max: 50 },
+  distortion: { min: -0.5, max: 0.5 },
+  vignette: { min: 0, max: 1 },
+  chromaAberration: { min: 0, max: 1 },
+  temperature: { min: -1, max: 1 },
+  tint: { min: -1, max: 1 },
+  contrast: { min: 0.5, max: 1.5 },
+  saturation: { min: 0, max: 2 },
+  sharpen: { min: 0, max: 1 },
+  noiseReduction: { min: 0, max: 1 }
+};
 
 const toShutterSeconds = (sliderValue: number): number =>
   SHUTTER_MIN * Math.pow(SHUTTER_MAX / SHUTTER_MIN, clamp(sliderValue, 0, 1));
@@ -332,6 +366,7 @@ export class CameraLabApp {
   private lastHistogramVersion = -1;
   private customPresets: Record<string, PresetPatch> = {};
   private loadedImage?: HTMLImageElement;
+  private aiRequestInFlight = false;
   private readonly meterCanvas = document.createElement("canvas");
 
   private readonly onResize = () => {
@@ -418,6 +453,20 @@ export class CameraLabApp {
               <button id="preset-save" class="mini-button" type="button">Save Current</button>
               <button id="preset-delete" class="mini-button is-muted" type="button">Delete</button>
             </div>
+          </section>
+
+          <section class="control-block">
+            <p class="control-title">AI Prompt</p>
+            <label class="ai-row" for="ai-api-key-input">
+              <span>OpenAI API Key</span>
+              <input id="ai-api-key-input" type="password" placeholder="sk-..." autocomplete="off" />
+            </label>
+            <label class="ai-prompt-row" for="ai-prompt-input">
+              <span>Prompt</span>
+              <textarea id="ai-prompt-input" rows="3" placeholder="예: 영화 같은 차가운 야간 느낌으로 조정해줘. 노이즈는 줄이고 대비는 조금 올려줘."></textarea>
+            </label>
+            <button id="ai-apply-button" class="mini-button" type="button">Apply AI Prompt</button>
+            <p class="hint">API key is stored in localStorage for this browser.</p>
           </section>
 
           <section class="control-block">
@@ -526,6 +575,7 @@ export class CameraLabApp {
     this.bindDragAndDrop();
     this.bindSourceButtons();
     this.bindPresetControls();
+    this.bindAiControls();
     this.bindPreviewControls();
     this.bindControlTheme();
     this.bindMeteringControls();
@@ -533,6 +583,7 @@ export class CameraLabApp {
 
     this.loadCustomPresets();
     this.rebuildPresetSelect();
+    this.restoreAiApiKey();
     this.restoreSessionState();
 
     this.unsubscribeParams = this.params.subscribe((state) => {
@@ -587,6 +638,9 @@ export class CameraLabApp {
       presetNameInput: this.requireElement<HTMLInputElement>("#preset-name-input"),
       presetSaveButton: this.requireElement<HTMLButtonElement>("#preset-save"),
       presetDeleteButton: this.requireElement<HTMLButtonElement>("#preset-delete"),
+      aiApiKeyInput: this.requireElement<HTMLInputElement>("#ai-api-key-input"),
+      aiPromptInput: this.requireElement<HTMLTextAreaElement>("#ai-prompt-input"),
+      aiApplyButton: this.requireElement<HTMLButtonElement>("#ai-apply-button"),
       previewOriginalButton: this.requireElement<HTMLButtonElement>("#preview-original"),
       previewProcessedButton: this.requireElement<HTMLButtonElement>("#preview-processed"),
       previewSplitButton: this.requireElement<HTMLButtonElement>("#preview-split"),
@@ -807,6 +861,28 @@ export class CameraLabApp {
 
     presetDeleteButton.addEventListener("click", () => {
       this.deleteSelectedCustomPreset();
+    });
+  }
+
+  private bindAiControls(): void {
+    if (!this.elements) {
+      return;
+    }
+
+    const { aiApiKeyInput, aiPromptInput, aiApplyButton } = this.elements;
+    aiApiKeyInput.addEventListener("change", () => {
+      writeStorage(AI_API_KEY_STORAGE_KEY, aiApiKeyInput.value.trim());
+    });
+
+    aiApplyButton.addEventListener("click", () => {
+      void this.applyAiPrompt();
+    });
+
+    aiPromptInput.addEventListener("keydown", (event) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+        event.preventDefault();
+        void this.applyAiPrompt();
+      }
     });
   }
 
@@ -1644,6 +1720,84 @@ export class CameraLabApp {
     writeStorage(CUSTOM_PRESETS_STORAGE_KEY, JSON.stringify(this.customPresets));
   }
 
+  private restoreAiApiKey(): void {
+    if (!this.elements) {
+      return;
+    }
+    const apiKey = readStorage(AI_API_KEY_STORAGE_KEY);
+    if (apiKey) {
+      this.elements.aiApiKeyInput.value = apiKey;
+    }
+  }
+
+  private setAiBusy(isBusy: boolean): void {
+    if (!this.elements) {
+      return;
+    }
+
+    this.elements.aiApplyButton.disabled = isBusy;
+    this.elements.aiApplyButton.textContent = isBusy ? "Applying..." : "Apply AI Prompt";
+  }
+
+  private async applyAiPrompt(): Promise<void> {
+    if (!this.elements || this.aiRequestInFlight) {
+      return;
+    }
+
+    const apiKey = this.elements.aiApiKeyInput.value.trim();
+    const prompt = this.elements.aiPromptInput.value.trim();
+
+    if (!apiKey) {
+      this.setStatus("Enter an OpenAI API key first.");
+      return;
+    }
+
+    if (!prompt) {
+      this.setStatus("Enter a prompt for AI adjustment.");
+      return;
+    }
+
+    writeStorage(AI_API_KEY_STORAGE_KEY, apiKey);
+
+    this.aiRequestInFlight = true;
+    this.setAiBusy(true);
+    this.setStatus("AI is generating camera adjustments...");
+
+    try {
+      const aiResponse = await requestAiCameraPatch(apiKey, prompt, this.params.getState());
+      const patch = sanitizeAiSuggestedPatch(aiResponse.patch);
+
+      if (!patch || Object.keys(patch).length === 0) {
+        this.setStatus("AI response did not include applicable setting changes.");
+        return;
+      }
+
+      if (!shouldAllowLensAdjustments(prompt)) {
+        delete patch.focalLength;
+        delete patch.focusDistance;
+      }
+
+      if (Object.keys(patch).length === 0) {
+        this.setStatus("AI changes were ignored (lens changes require explicit prompt).");
+        return;
+      }
+
+      this.params.patch(patch);
+      const summary = aiResponse.summary?.trim();
+      if (summary) {
+        this.setStatus(`AI applied: ${summary}`);
+      } else {
+        this.setStatus(`AI applied ${Object.keys(patch).length} setting(s).`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown AI request error.";
+      this.setStatus(`AI request failed: ${message}`);
+    } finally {
+      this.aiRequestInFlight = false;
+      this.setAiBusy(false);
+    }
+  }
+
   private restoreSessionState(): void {
     const raw = readStorage(SESSION_STORAGE_KEY);
     if (!raw) {
@@ -1821,6 +1975,165 @@ function toSessionPatch(value: unknown): Partial<CameraParams> | null {
   }
 
   return Object.keys(patch).length > 0 ? patch : null;
+}
+
+type AiPatchResponsePayload = {
+  patch?: unknown;
+  summary?: unknown;
+  status?: unknown;
+};
+
+type OpenAiChatCompletionPayload = {
+  choices?: Array<{
+    message?: {
+      content?: string | null;
+    };
+  }>;
+  error?: {
+    message?: string;
+  };
+};
+
+function sanitizeAiSuggestedPatch(value: unknown): AiSuggestedPatch | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  const patch: AiSuggestedPatch = {};
+
+  for (const [key, limits] of Object.entries(PARAM_VALUE_LIMITS) as Array<
+    [NumericParamKey, { min: number; max: number }]
+  >) {
+    const nextValue = candidate[key];
+    if (!isFiniteNumber(nextValue)) {
+      continue;
+    }
+    patch[key] = clamp(nextValue, limits.min, limits.max);
+  }
+
+  if (typeof candidate.toneMap === "boolean") {
+    patch.toneMap = candidate.toneMap;
+  }
+  if (isFiniteNumber(candidate.upscaleFactor)) {
+    patch.upscaleFactor = coerceUpscaleFactor(candidate.upscaleFactor);
+  }
+  if (typeof candidate.upscaleStyle === "string") {
+    patch.upscaleStyle = parseUpscaleStyle(candidate.upscaleStyle);
+  }
+
+  return Object.keys(patch).length > 0 ? patch : null;
+}
+
+function shouldAllowLensAdjustments(prompt: string): boolean {
+  const normalized = prompt.toLowerCase();
+  const keywords = [
+    "lens",
+    "zoom",
+    "focal",
+    "focus",
+    "depth of field",
+    "렌즈",
+    "줌",
+    "화각",
+    "초점",
+    "포커스",
+    "심도"
+  ];
+  return keywords.some((keyword) => normalized.includes(keyword));
+}
+
+async function requestAiCameraPatch(
+  apiKey: string,
+  prompt: string,
+  state: Readonly<CameraParams>
+): Promise<{ patch: unknown; summary: string }> {
+  const requestBody = {
+    model: OPENAI_MODEL,
+    temperature: 0.2,
+    response_format: {
+      type: "json_object"
+    },
+    messages: [
+      {
+        role: "system",
+        content: [
+          "You are a camera look tuning assistant.",
+          "Given the user's prompt and current camera state, produce subtle but visible adjustments.",
+          "Return valid JSON only with shape:",
+          '{"patch":{"exposureEV":number,"shutter":number,"iso":number,"aperture":number,"focalLength":number,"focusDistance":number,"distortion":number,"vignette":number,"chromaAberration":number,"temperature":number,"tint":number,"contrast":number,"saturation":number,"sharpen":number,"noiseReduction":number,"toneMap":boolean,"upscaleFactor":number,"upscaleStyle":"balanced"|"enhanced"},"summary":"short text"}',
+          "Use only fields that need to change.",
+          "Respect ranges:",
+          "exposureEV[-3..3], shutter[0.000125..0.066667], iso[100..6400], aperture[1.4..22], focalLength[18..120], focusDistance[0.2..50], distortion[-0.5..0.5], vignette[0..1], chromaAberration[0..1], temperature[-1..1], tint[-1..1], contrast[0.5..1.5], saturation[0..2], sharpen[0..1], noiseReduction[0..1], upscaleFactor in [1,1.5,2,2.5,3,3.5,4], upscaleStyle in [balanced,enhanced].",
+          "Do not change focalLength or focusDistance unless the prompt explicitly asks for lens/zoom/focus/depth-of-field change."
+        ].join("\n")
+      },
+      {
+        role: "user",
+        content: JSON.stringify({
+          prompt,
+          currentState: {
+            exposureEV: state.exposureEV,
+            shutter: state.shutter,
+            iso: state.iso,
+            aperture: state.aperture,
+            focalLength: state.focalLength,
+            focusDistance: state.focusDistance,
+            distortion: state.distortion,
+            vignette: state.vignette,
+            chromaAberration: state.chromaAberration,
+            temperature: state.temperature,
+            tint: state.tint,
+            contrast: state.contrast,
+            saturation: state.saturation,
+            sharpen: state.sharpen,
+            noiseReduction: state.noiseReduction,
+            toneMap: state.toneMap,
+            upscaleFactor: state.upscaleFactor,
+            upscaleStyle: state.upscaleStyle
+          }
+        })
+      }
+    ]
+  };
+
+  const response = await fetch(OPENAI_API_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify(requestBody)
+  });
+
+  const payload = (await response.json()) as OpenAiChatCompletionPayload;
+  if (!response.ok) {
+    throw new Error(payload.error?.message ?? `OpenAI request failed (${response.status}).`);
+  }
+
+  const content = payload.choices?.[0]?.message?.content;
+  if (!content || typeof content !== "string") {
+    throw new Error("OpenAI returned an empty response.");
+  }
+
+  let parsed: AiPatchResponsePayload;
+  try {
+    parsed = JSON.parse(content) as AiPatchResponsePayload;
+  } catch {
+    throw new Error("OpenAI response was not valid JSON.");
+  }
+
+  const summary =
+    typeof parsed.summary === "string"
+      ? parsed.summary
+      : typeof parsed.status === "string"
+        ? parsed.status
+        : "";
+
+  return {
+    patch: parsed.patch,
+    summary
+  };
 }
 
 function isFiniteNumber(value: unknown): value is number {

@@ -25,6 +25,7 @@ This folder contains the initial web MVP with:
 - Sharpen and ISO-aware Noise Reduction controls
 - Performance modes: Quality / Balanced / Fast (preview resolution scaling, high-quality snapshot export)
 - Parameter UI theme switch: `Sliders` or animated camera-style rotating `Dials` (aperture/lens-specific motion)
+- AI prompt control: enter OpenAI API key + natural-language look prompt to auto-adjust camera settings
 
 Not included yet:
 
@@ -40,6 +41,8 @@ npm run dev
 
 Open `http://localhost:5173`.
 When selecting `Webcam`, allow camera permission in your browser.
+To use AI prompt control, paste your OpenAI API key in the left panel and run `Apply AI Prompt`.
+The key is stored in browser `localStorage` for convenience; use a throwaway/dev key for local testing.
 
 ## Other commands
 

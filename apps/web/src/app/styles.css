@@ -172,6 +172,43 @@ body {
   padding: 0.45rem 0.5rem;
 }
 
+.ai-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.ai-row span,
+.ai-prompt-row span {
+  color: var(--muted);
+  font-size: 0.83rem;
+}
+
+.ai-row input {
+  border: 1px solid var(--panel-border);
+  background: #10151d;
+  color: var(--text);
+  border-radius: 0.45rem;
+  padding: 0.45rem 0.5rem;
+}
+
+.ai-prompt-row {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.ai-prompt-row textarea {
+  border: 1px solid var(--panel-border);
+  background: #10151d;
+  color: var(--text);
+  border-radius: 0.45rem;
+  padding: 0.45rem 0.5rem;
+  min-height: 76px;
+  resize: vertical;
+  font: inherit;
+}
+
 .mini-button.is-muted {
   background: #0d1118;
   color: var(--muted);
