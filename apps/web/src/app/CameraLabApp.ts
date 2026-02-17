@@ -1534,7 +1534,7 @@ export class CameraLabApp {
     const deltaX = event.clientX - this.panDragState.startClientX;
     const deltaY = event.clientY - this.panDragState.startClientY;
     const nextPanX = clamp(this.panDragState.startPanX - deltaX / (rect.width * panLimitUv), -1, 1);
-    const nextPanY = clamp(this.panDragState.startPanY + deltaY / (rect.height * panLimitUv), -1, 1);
+    const nextPanY = clamp(this.panDragState.startPanY - deltaY / (rect.height * panLimitUv), -1, 1);
     this.params.patch({
       viewPanX: nextPanX,
       viewPanY: nextPanY

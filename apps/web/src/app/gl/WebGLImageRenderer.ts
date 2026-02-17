@@ -157,7 +157,10 @@ uniform float uShutter;
 uniform float uIso;
 uniform float uAperture;
 uniform float uFocusDistance;
+uniform float uFocalLength;
+uniform float uDistortion;
 uniform vec2 uLensShift;
+uniform vec2 uViewPan;
 uniform float uTemperature;
 uniform float uTint;
 uniform float uContrast;
@@ -265,7 +268,21 @@ float nearestMarkerDistance(vec2 uv, vec4 markers[6], int markerCount) {
   return nearest;
 }
 
+vec2 mapEffectUv(vec2 uv) {
+  vec2 lensCenter = clamp(vec2(0.5) + uLensShift, vec2(0.02), vec2(0.98));
+  vec2 centered = uv - lensCenter;
+  float radius2 = dot(centered, centered);
+  vec2 distortedUv = uv + centered * radius2 * (uDistortion * 0.7);
+
+  float focalNorm = clamp((uFocalLength - 18.0) / (120.0 - 18.0), 0.0, 1.0);
+  float zoom = mix(1.0, 2.2, focalNorm);
+  float panLimit = max(0.0, (zoom - 1.0) / (2.0 * zoom));
+  vec2 panOffset = clamp(uViewPan, vec2(-1.0), vec2(1.0)) * vec2(panLimit, -panLimit);
+  return (distortedUv - lensCenter) / zoom + lensCenter + panOffset;
+}
+
 void main() {
+  vec2 effectUv = mapEffectUv(vUv);
   float shutterNorm = clamp(
     (log(uShutter) - log(1.0 / 8000.0)) / (log(1.0 / 15.0) - log(1.0 / 8000.0)),
     0.0,
@@ -287,21 +304,21 @@ void main() {
 
   // Keep selected center sharp; focus distance controls how wide the sharp zone is.
   float focusRadius = mix(0.06, 0.44, focusNorm);
-  float sceneRadius = length(vUv - subjectCenter);
+  float sceneRadius = length(effectUv - subjectCenter);
   if (uFocusMarkerCount > 0) {
-    float nearestFocusDistance = nearestMarkerDistance(vUv, uFocusMarkers, uFocusMarkerCount);
+    float nearestFocusDistance = nearestMarkerDistance(effectUv, uFocusMarkers, uFocusMarkerCount);
     sceneRadius = min(sceneRadius, nearestFocusDistance);
   }
   float outsideFocus = max(0.0, sceneRadius - focusRadius);
   float coc = clamp(outsideFocus * 2.4, 0.0, 1.0);
-  float focusMarkerInfluence = accumulateMarkerInfluence(vUv, uFocusMarkers, uFocusMarkerCount);
-  float focusMarkerPeak = maxMarkerInfluence(vUv, uFocusMarkers, uFocusMarkerCount);
-  float blurMarkerInfluence = accumulateMarkerInfluence(vUv, uBlurMarkers, uBlurMarkerCount);
+  float focusMarkerInfluence = accumulateMarkerInfluence(effectUv, uFocusMarkers, uFocusMarkerCount);
+  float focusMarkerPeak = maxMarkerInfluence(effectUv, uFocusMarkers, uFocusMarkerCount);
+  float blurMarkerInfluence = accumulateMarkerInfluence(effectUv, uBlurMarkers, uBlurMarkerCount);
   // Focus markers should create clearly sharp local islands, not subtle blur reduction.
   coc = mix(coc, 0.0, focusMarkerPeak * 0.98);
   coc = max(0.0, coc - focusMarkerInfluence * 0.42);
   coc = clamp(coc + blurMarkerInfluence * 0.82, 0.0, 1.0);
-  float protectedSubject = subjectMask(vUv, safeSubjectBox) * subjectBlend;
+  float protectedSubject = subjectMask(effectUv, safeSubjectBox) * subjectBlend;
   coc = mix(coc, coc * 0.22, protectedSubject);
   float focusBlurStrength = mix(1.2, 9.0, apertureWide);
   float focusDistanceFactor = mix(1.28, 0.72, focusNorm);
@@ -342,8 +359,8 @@ void main() {
   detailGain = mix(detailGain, detailGain + (styleBoost - 1.0) * 0.24, uUpscaleStyle);
   color += detail * detailGain;
 
-  float naturalLightInfluence = accumulateMarkerInfluence(vUv, uNaturalLights, uNaturalLightCount);
-  float artificialLightInfluence = accumulateMarkerInfluence(vUv, uArtificialLights, uArtificialLightCount);
+  float naturalLightInfluence = accumulateMarkerInfluence(effectUv, uNaturalLights, uNaturalLightCount);
+  float artificialLightInfluence = accumulateMarkerInfluence(effectUv, uArtificialLights, uArtificialLightCount);
   float lightLift = naturalLightInfluence * 0.32 + artificialLightInfluence * 0.27;
   color *= 1.0 + lightLift;
   color += vec3(0.08, 0.055, -0.01) * naturalLightInfluence;
@@ -455,7 +472,10 @@ export class WebGLImageRenderer {
   private readonly effectsIsoUniform: WebGLUniformLocation;
   private readonly effectsApertureUniform: WebGLUniformLocation;
   private readonly effectsFocusDistanceUniform: WebGLUniformLocation;
+  private readonly effectsFocalLengthUniform: WebGLUniformLocation;
+  private readonly effectsDistortionUniform: WebGLUniformLocation;
   private readonly effectsLensShiftUniform: WebGLUniformLocation;
+  private readonly effectsViewPanUniform: WebGLUniformLocation;
   private readonly effectsTemperatureUniform: WebGLUniformLocation;
   private readonly effectsTintUniform: WebGLUniformLocation;
   private readonly effectsContrastUniform: WebGLUniformLocation;
@@ -559,7 +579,10 @@ export class WebGLImageRenderer {
     this.effectsIsoUniform = this.requireUniform(this.effectsProgram, "uIso");
     this.effectsApertureUniform = this.requireUniform(this.effectsProgram, "uAperture");
     this.effectsFocusDistanceUniform = this.requireUniform(this.effectsProgram, "uFocusDistance");
+    this.effectsFocalLengthUniform = this.requireUniform(this.effectsProgram, "uFocalLength");
+    this.effectsDistortionUniform = this.requireUniform(this.effectsProgram, "uDistortion");
     this.effectsLensShiftUniform = this.requireUniform(this.effectsProgram, "uLensShift");
+    this.effectsViewPanUniform = this.requireUniform(this.effectsProgram, "uViewPan");
     this.effectsTemperatureUniform = this.requireUniform(this.effectsProgram, "uTemperature");
     this.effectsTintUniform = this.requireUniform(this.effectsProgram, "uTint");
     this.effectsContrastUniform = this.requireUniform(this.effectsProgram, "uContrast");
@@ -897,7 +920,14 @@ export class WebGLImageRenderer {
     this.gl.uniform1f(this.effectsIsoUniform, this.params.iso);
     this.gl.uniform1f(this.effectsApertureUniform, this.params.aperture);
     this.gl.uniform1f(this.effectsFocusDistanceUniform, this.params.focusDistance);
+    this.gl.uniform1f(this.effectsFocalLengthUniform, this.params.focalLength);
+    this.gl.uniform1f(this.effectsDistortionUniform, this.params.distortion);
     this.gl.uniform2f(this.effectsLensShiftUniform, lensShift.x, lensShift.y);
+    this.gl.uniform2f(
+      this.effectsViewPanUniform,
+      clampNumber(this.params.viewPanX, -1, 1),
+      clampNumber(this.params.viewPanY, -1, 1)
+    );
     this.gl.uniform1f(this.effectsTemperatureUniform, this.params.temperature);
     this.gl.uniform1f(this.effectsTintUniform, this.params.tint);
     this.gl.uniform1f(this.effectsContrastUniform, this.params.contrast);
