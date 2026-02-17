@@ -106,6 +106,14 @@ type LensMarker = {
 type MarkerDragState = {
   pointerId: number;
   markerId: string;
+  historyCaptured: boolean;
+};
+
+type HistorySnapshot = {
+  params: CameraParams;
+  markers: LensMarker[];
+  selectedMarkerId: string | null;
+  markerTool: MarkerKind;
 };
 
 type SliderControlDef = {
@@ -181,6 +189,8 @@ type AppElements = {
   markerClearButton: HTMLButtonElement;
   markerSizeSlider: HTMLInputElement;
   markerSizeReadout: HTMLOutputElement;
+  undoButton: HTMLButtonElement;
+  redoButton: HTMLButtonElement;
   markerReadout: HTMLOutputElement;
   lensShiftReadout: HTMLOutputElement;
   panReadout: HTMLOutputElement;
@@ -225,6 +235,7 @@ const MARKER_KIND_LABEL: Record<MarkerKind, string> = {
   "light-natural": "Natural Light",
   "light-artificial": "Artificial Light"
 };
+const HISTORY_LIMIT = 120;
 
 const PARAM_VALUE_LIMITS: Record<NumericParamKey, { min: number; max: number }> = {
   exposureEV: { min: -3, max: 3 },
@@ -453,6 +464,9 @@ export class CameraLabApp {
   private selectedMarkerId: string | null = null;
   private markerDragState: MarkerDragState | null = null;
   private markerSeed = 1;
+  private undoStack: HistorySnapshot[] = [];
+  private redoStack: HistorySnapshot[] = [];
+  private isApplyingHistory = false;
   private panDragState: PanDragState | null = null;
   private sourceMode: SourceMode = "image";
   private hasImage = false;
@@ -486,6 +500,25 @@ export class CameraLabApp {
       return;
     }
 
+    const isMeta = event.metaKey || event.ctrlKey;
+    if (isMeta && !event.altKey) {
+      const key = event.key.toLowerCase();
+      if (key === "z") {
+        event.preventDefault();
+        if (event.shiftKey) {
+          this.redo();
+        } else {
+          this.undo();
+        }
+        return;
+      }
+      if (key === "y") {
+        event.preventDefault();
+        this.redo();
+        return;
+      }
+    }
+
     const state = this.params.getState();
 
     if (event.code === "Space") {
@@ -509,6 +542,7 @@ export class CameraLabApp {
 
     if (event.code === "KeyR") {
       event.preventDefault();
+      this.pushHistoryCheckpoint();
       this.params.reset();
       this.markers = [];
       this.selectedMarkerId = null;
@@ -531,7 +565,7 @@ export class CameraLabApp {
     if ((event.code === "BracketLeft" || event.code === "BracketRight") && this.selectedMarkerId) {
       event.preventDefault();
       const delta = event.code === "BracketRight" ? 0.01 : -0.01;
-      if (this.adjustSelectedMarkerRadius(delta)) {
+      if (this.adjustSelectedMarkerRadius(delta, true)) {
         this.setStatus(`Marker size ${delta > 0 ? "increased" : "decreased"}.`);
       }
     }
@@ -667,6 +701,8 @@ export class CameraLabApp {
               <button id="marker-add-center" class="mini-button" type="button">Add Center</button>
               <button id="marker-remove-selected" class="mini-button is-muted" type="button">Remove Selected</button>
               <button id="marker-clear" class="mini-button is-muted" type="button">Clear All</button>
+              <button id="history-undo" class="mini-button is-muted" type="button">Undo</button>
+              <button id="history-redo" class="mini-button is-muted" type="button">Redo</button>
             </div>
             <label class="marker-size-row" for="marker-size-slider">
               <span>Marker Size</span>
@@ -676,7 +712,7 @@ export class CameraLabApp {
             <output class="interaction-readout" id="marker-readout">Markers: none</output>
             <output class="interaction-readout" id="lens-shift-readout">Lens Shift X +0.000, Y +0.000</output>
             <output class="interaction-readout" id="pan-readout">Pan X +0.000, Y +0.000</output>
-            <p class="hint">Shortcuts: <code>Space</code> A/B, <code>S</code> Split, <code>R</code> Reset</p>
+            <p class="hint">Shortcuts: <code>Space</code> A/B, <code>S</code> Split, <code>R</code> Reset, <code>Cmd/Ctrl+Z</code> Undo, <code>Cmd/Ctrl+Shift+Z</code> Redo, <code>[</code>/<code>]</code> Marker Size</p>
           </section>
 
           <section class="control-block param-section">
@@ -821,6 +857,8 @@ export class CameraLabApp {
       markerClearButton: this.requireElement<HTMLButtonElement>("#marker-clear"),
       markerSizeSlider: this.requireElement<HTMLInputElement>("#marker-size-slider"),
       markerSizeReadout: this.requireElement<HTMLOutputElement>("#marker-size-readout"),
+      undoButton: this.requireElement<HTMLButtonElement>("#history-undo"),
+      redoButton: this.requireElement<HTMLButtonElement>("#history-redo"),
       markerReadout: this.requireElement<HTMLOutputElement>("#marker-readout"),
       lensShiftReadout: this.requireElement<HTMLOutputElement>("#lens-shift-readout"),
       panReadout: this.requireElement<HTMLOutputElement>("#pan-readout"),
@@ -1169,6 +1207,15 @@ export class CameraLabApp {
     this.elements.markerKindSelect.addEventListener("change", () => {
       this.markerTool = parseMarkerKind(this.elements?.markerKindSelect.value);
       writeStorage(MARKER_TOOL_STORAGE_KEY, this.markerTool);
+      if (this.selectedMarkerId) {
+        if (this.convertSelectedMarkerKind(this.markerTool, true)) {
+          this.setStatus(`Selected marker converted to ${MARKER_KIND_LABEL[this.markerTool]}.`);
+          return;
+        }
+        this.setStatus(`${MARKER_KIND_LABEL[this.markerTool]} markers are full.`);
+        this.syncMarkerControls();
+        return;
+      }
       this.updateFocusOverlay();
       this.syncMarkerControls();
       this.setStatus(`Marker tool: ${MARKER_KIND_LABEL[this.markerTool]}`);
@@ -1192,6 +1239,7 @@ export class CameraLabApp {
         this.setStatus("No markers to clear.");
         return;
       }
+      this.pushHistoryCheckpoint();
       this.markers = [];
       this.selectedMarkerId = null;
       this.pushMarkersToRenderer();
@@ -1200,12 +1248,26 @@ export class CameraLabApp {
       this.setStatus("All markers cleared.");
     });
 
+    this.elements.undoButton.addEventListener("click", () => {
+      this.undo();
+    });
+
+    this.elements.redoButton.addEventListener("click", () => {
+      this.redo();
+    });
+
+    this.elements.markerSizeSlider.addEventListener("pointerdown", () => {
+      if (this.selectedMarkerId) {
+        this.pushHistoryCheckpoint();
+      }
+    });
+
     this.elements.markerSizeSlider.addEventListener("input", () => {
       const radius = Number(this.elements?.markerSizeSlider.value);
       if (!Number.isFinite(radius)) {
         return;
       }
-      this.setSelectedMarkerRadius(radius);
+      this.setSelectedMarkerRadius(radius, false);
     });
   }
 
@@ -1243,6 +1305,8 @@ export class CameraLabApp {
     this.elements.markerAddCenterButton.disabled = !markerEnabled;
     this.elements.markerRemoveSelectedButton.disabled = !markerEnabled || !this.selectedMarkerId;
     this.elements.markerClearButton.disabled = !markerEnabled || this.markers.length === 0;
+    this.elements.undoButton.disabled = this.undoStack.length === 0;
+    this.elements.redoButton.disabled = this.redoStack.length === 0;
     const selectedMarker = this.getSelectedMarker();
     const markerSizeDisabled = !markerEnabled || !selectedMarker;
     this.elements.markerSizeSlider.disabled = markerSizeDisabled;
@@ -1384,7 +1448,8 @@ export class CameraLabApp {
         this.selectedMarkerId = hit.id;
         this.markerDragState = {
           pointerId: event.pointerId,
-          markerId: hit.id
+          markerId: hit.id,
+          historyCaptured: false
         };
         this.elements.canvas.setPointerCapture(event.pointerId);
         this.syncMarkerControls();
@@ -1400,7 +1465,8 @@ export class CameraLabApp {
       }
       this.markerDragState = {
         pointerId: event.pointerId,
-        markerId: marker.id
+        markerId: marker.id,
+        historyCaptured: true
       };
       this.elements.canvas.setPointerCapture(event.pointerId);
       this.setStatus(`Added ${MARKER_KIND_LABEL[marker.kind]} marker.`);
@@ -1441,6 +1507,10 @@ export class CameraLabApp {
         return;
       }
       event.preventDefault();
+      if (!this.markerDragState.historyCaptured) {
+        this.pushHistoryCheckpoint();
+        this.markerDragState.historyCaptured = true;
+      }
       this.moveMarker(this.markerDragState.markerId, uv.x, uv.y);
       return;
     }
@@ -1590,9 +1660,12 @@ export class CameraLabApp {
     return this.markers.find((marker) => marker.id === this.selectedMarkerId) ?? null;
   }
 
-  private setSelectedMarkerRadius(radius: number): boolean {
+  private setSelectedMarkerRadius(radius: number, captureHistory: boolean): boolean {
     if (!this.selectedMarkerId) {
       return false;
+    }
+    if (captureHistory) {
+      this.pushHistoryCheckpoint();
     }
     const clampedRadius = clamp(radius, MARKER_RADIUS_RANGE.min, MARKER_RADIUS_RANGE.max);
     let changed = false;
@@ -1618,12 +1691,12 @@ export class CameraLabApp {
     return true;
   }
 
-  private adjustSelectedMarkerRadius(delta: number): boolean {
+  private adjustSelectedMarkerRadius(delta: number, captureHistory: boolean): boolean {
     const selected = this.getSelectedMarker();
     if (!selected) {
       return false;
     }
-    return this.setSelectedMarkerRadius(selected.radius + delta);
+    return this.setSelectedMarkerRadius(selected.radius + delta, captureHistory);
   }
 
   private findMarkerAtUv(uvX: number, uvY: number): LensMarker | null {
@@ -1648,6 +1721,7 @@ export class CameraLabApp {
     if (countForKind >= MAX_MARKERS_PER_KIND) {
       return null;
     }
+    this.pushHistoryCheckpoint();
     const marker: LensMarker = {
       id: `m-${this.markerSeed++}`,
       kind,
@@ -1690,6 +1764,10 @@ export class CameraLabApp {
 
   private removeMarkerById(markerId: string): boolean {
     const prevLength = this.markers.length;
+    if (!this.markers.some((marker) => marker.id === markerId)) {
+      return false;
+    }
+    this.pushHistoryCheckpoint();
     this.markers = this.markers.filter((marker) => marker.id !== markerId);
     if (this.markers.length === prevLength) {
       return false;
@@ -1719,6 +1797,112 @@ export class CameraLabApp {
     const centerX = weightSum > 1e-6 ? weightedX / weightSum : focusMarkers[focusMarkers.length - 1].x;
     const centerY = weightSum > 1e-6 ? weightedY / weightSum : focusMarkers[focusMarkers.length - 1].y;
     this.applyLensShiftFromUv(centerX, centerY);
+  }
+
+  private convertSelectedMarkerKind(nextKind: MarkerKind, captureHistory: boolean): boolean {
+    const selected = this.getSelectedMarker();
+    if (!selected) {
+      return false;
+    }
+    if (selected.kind === nextKind) {
+      return true;
+    }
+    const targetCount = this.markers.filter((marker) => marker.kind === nextKind).length;
+    if (targetCount >= MAX_MARKERS_PER_KIND) {
+      return false;
+    }
+    if (captureHistory) {
+      this.pushHistoryCheckpoint();
+    }
+    this.markers = this.markers.map((marker) => {
+      if (marker.id !== selected.id) {
+        return marker;
+      }
+      return {
+        ...marker,
+        kind: nextKind
+      };
+    });
+    this.syncLensShiftFromMarkers();
+    this.pushMarkersToRenderer();
+    this.updateFocusOverlay();
+    this.syncMarkerControls();
+    return true;
+  }
+
+  private captureHistorySnapshot(): HistorySnapshot {
+    return {
+      params: { ...this.params.getState() },
+      markers: this.markers.map((marker) => ({ ...marker })),
+      selectedMarkerId: this.selectedMarkerId,
+      markerTool: this.markerTool
+    };
+  }
+
+  private pushHistoryCheckpoint(): void {
+    if (this.isApplyingHistory) {
+      return;
+    }
+    const snapshot = this.captureHistorySnapshot();
+    const last = this.undoStack[this.undoStack.length - 1];
+    if (last && areHistorySnapshotsEqual(last, snapshot)) {
+      return;
+    }
+    this.undoStack.push(snapshot);
+    if (this.undoStack.length > HISTORY_LIMIT) {
+      this.undoStack.shift();
+    }
+    this.redoStack = [];
+    this.syncMarkerControls();
+  }
+
+  private undo(): void {
+    if (this.undoStack.length === 0) {
+      this.setStatus("Nothing to undo.");
+      return;
+    }
+    const current = this.captureHistorySnapshot();
+    const previous = this.undoStack.pop();
+    if (!previous) {
+      return;
+    }
+    this.redoStack.push(current);
+    this.applyHistorySnapshot(previous);
+    this.setStatus("Undo applied.");
+  }
+
+  private redo(): void {
+    if (this.redoStack.length === 0) {
+      this.setStatus("Nothing to redo.");
+      return;
+    }
+    const current = this.captureHistorySnapshot();
+    const next = this.redoStack.pop();
+    if (!next) {
+      return;
+    }
+    this.undoStack.push(current);
+    this.applyHistorySnapshot(next);
+    this.setStatus("Redo applied.");
+  }
+
+  private applyHistorySnapshot(snapshot: HistorySnapshot): void {
+    this.isApplyingHistory = true;
+    this.params.patch(snapshot.params);
+    this.markers = snapshot.markers.map((marker) => ({ ...marker }));
+    this.selectedMarkerId =
+      snapshot.selectedMarkerId && this.markers.some((marker) => marker.id === snapshot.selectedMarkerId)
+        ? snapshot.selectedMarkerId
+        : this.markers.length > 0
+          ? this.markers[this.markers.length - 1].id
+          : null;
+    this.markerTool = snapshot.markerTool;
+    writeStorage(MARKER_TOOL_STORAGE_KEY, this.markerTool);
+    this.syncLensShiftFromMarkers();
+    this.pushMarkersToRenderer();
+    this.updateFocusOverlay();
+    this.syncMarkerControls();
+    this.isApplyingHistory = false;
   }
 
   private applyAiMarkerPatch(patch: AiMarkerPatch): void {
@@ -2468,6 +2652,7 @@ export class CameraLabApp {
       if (appliedState.previewMode === "original") {
         this.params.set("previewMode", "processed");
       }
+      this.pushHistoryCheckpoint();
       if (finalPatch && Object.keys(finalPatch).length > 0) {
         this.params.patch(finalPatch);
       }
@@ -4228,6 +4413,36 @@ function computeNextMarkerSeed(markers: readonly LensMarker[], fallback: number)
     }
   }
   return maxSeen;
+}
+
+function areHistorySnapshotsEqual(a: HistorySnapshot, b: HistorySnapshot): boolean {
+  if (a.selectedMarkerId !== b.selectedMarkerId || a.markerTool !== b.markerTool) {
+    return false;
+  }
+  const aParamKeys = Object.keys(a.params) as Array<keyof CameraParams>;
+  for (const key of aParamKeys) {
+    if (!Object.is(a.params[key], b.params[key])) {
+      return false;
+    }
+  }
+  if (a.markers.length !== b.markers.length) {
+    return false;
+  }
+  for (let i = 0; i < a.markers.length; i += 1) {
+    const am = a.markers[i];
+    const bm = b.markers[i];
+    if (
+      am.id !== bm.id ||
+      am.kind !== bm.kind ||
+      !Object.is(am.x, bm.x) ||
+      !Object.is(am.y, bm.y) ||
+      !Object.is(am.radius, bm.radius) ||
+      !Object.is(am.strength, bm.strength)
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function lerp(a: number, b: number, t: number): number {
