@@ -179,6 +179,8 @@ type AppElements = {
   markerAddCenterButton: HTMLButtonElement;
   markerRemoveSelectedButton: HTMLButtonElement;
   markerClearButton: HTMLButtonElement;
+  markerSizeSlider: HTMLInputElement;
+  markerSizeReadout: HTMLOutputElement;
   markerReadout: HTMLOutputElement;
   lensShiftReadout: HTMLOutputElement;
   panReadout: HTMLOutputElement;
@@ -523,6 +525,15 @@ export class CameraLabApp {
       if (this.removeMarkerById(this.selectedMarkerId)) {
         this.setStatus("Selected marker removed.");
       }
+      return;
+    }
+
+    if ((event.code === "BracketLeft" || event.code === "BracketRight") && this.selectedMarkerId) {
+      event.preventDefault();
+      const delta = event.code === "BracketRight" ? 0.01 : -0.01;
+      if (this.adjustSelectedMarkerRadius(delta)) {
+        this.setStatus(`Marker size ${delta > 0 ? "increased" : "decreased"}.`);
+      }
     }
   };
 
@@ -657,6 +668,11 @@ export class CameraLabApp {
               <button id="marker-remove-selected" class="mini-button is-muted" type="button">Remove Selected</button>
               <button id="marker-clear" class="mini-button is-muted" type="button">Clear All</button>
             </div>
+            <label class="marker-size-row" for="marker-size-slider">
+              <span>Marker Size</span>
+              <input id="marker-size-slider" type="range" min="${MARKER_RADIUS_RANGE.min}" max="${MARKER_RADIUS_RANGE.max}" step="0.005" value="0.14" />
+              <output id="marker-size-readout">0.140</output>
+            </label>
             <output class="interaction-readout" id="marker-readout">Markers: none</output>
             <output class="interaction-readout" id="lens-shift-readout">Lens Shift X +0.000, Y +0.000</output>
             <output class="interaction-readout" id="pan-readout">Pan X +0.000, Y +0.000</output>
@@ -803,6 +819,8 @@ export class CameraLabApp {
       markerAddCenterButton: this.requireElement<HTMLButtonElement>("#marker-add-center"),
       markerRemoveSelectedButton: this.requireElement<HTMLButtonElement>("#marker-remove-selected"),
       markerClearButton: this.requireElement<HTMLButtonElement>("#marker-clear"),
+      markerSizeSlider: this.requireElement<HTMLInputElement>("#marker-size-slider"),
+      markerSizeReadout: this.requireElement<HTMLOutputElement>("#marker-size-readout"),
       markerReadout: this.requireElement<HTMLOutputElement>("#marker-readout"),
       lensShiftReadout: this.requireElement<HTMLOutputElement>("#lens-shift-readout"),
       panReadout: this.requireElement<HTMLOutputElement>("#pan-readout"),
@@ -1181,6 +1199,14 @@ export class CameraLabApp {
       this.syncMarkerControls();
       this.setStatus("All markers cleared.");
     });
+
+    this.elements.markerSizeSlider.addEventListener("input", () => {
+      const radius = Number(this.elements?.markerSizeSlider.value);
+      if (!Number.isFinite(radius)) {
+        return;
+      }
+      this.setSelectedMarkerRadius(radius);
+    });
   }
 
   private syncControlThemeView(): void {
@@ -1217,6 +1243,14 @@ export class CameraLabApp {
     this.elements.markerAddCenterButton.disabled = !markerEnabled;
     this.elements.markerRemoveSelectedButton.disabled = !markerEnabled || !this.selectedMarkerId;
     this.elements.markerClearButton.disabled = !markerEnabled || this.markers.length === 0;
+    const selectedMarker = this.getSelectedMarker();
+    const markerSizeDisabled = !markerEnabled || !selectedMarker;
+    this.elements.markerSizeSlider.disabled = markerSizeDisabled;
+    const markerRadius = selectedMarker
+      ? clamp(selectedMarker.radius, MARKER_RADIUS_RANGE.min, MARKER_RADIUS_RANGE.max)
+      : defaultRadiusForMarkerKind(this.markerTool);
+    this.elements.markerSizeSlider.value = markerRadius.toFixed(3);
+    this.elements.markerSizeReadout.textContent = markerRadius.toFixed(3);
     const counts = countMarkersByKind(this.markers);
     const summary = MARKER_KIND_ORDER.map((kind) => `${MARKER_KIND_LABEL[kind]} ${counts[kind]}`).join(" · ");
     this.elements.markerReadout.textContent =
@@ -1547,6 +1581,49 @@ export class CameraLabApp {
       this.drawHistogram();
     }
     this.persistSessionState(this.params.getState());
+  }
+
+  private getSelectedMarker(): LensMarker | null {
+    if (!this.selectedMarkerId) {
+      return null;
+    }
+    return this.markers.find((marker) => marker.id === this.selectedMarkerId) ?? null;
+  }
+
+  private setSelectedMarkerRadius(radius: number): boolean {
+    if (!this.selectedMarkerId) {
+      return false;
+    }
+    const clampedRadius = clamp(radius, MARKER_RADIUS_RANGE.min, MARKER_RADIUS_RANGE.max);
+    let changed = false;
+    this.markers = this.markers.map((marker) => {
+      if (marker.id !== this.selectedMarkerId) {
+        return marker;
+      }
+      if (Math.abs(marker.radius - clampedRadius) < 0.0005) {
+        return marker;
+      }
+      changed = true;
+      return {
+        ...marker,
+        radius: clampedRadius
+      };
+    });
+    if (!changed) {
+      return false;
+    }
+    this.pushMarkersToRenderer();
+    this.updateFocusOverlay();
+    this.syncMarkerControls();
+    return true;
+  }
+
+  private adjustSelectedMarkerRadius(delta: number): boolean {
+    const selected = this.getSelectedMarker();
+    if (!selected) {
+      return false;
+    }
+    return this.setSelectedMarkerRadius(selected.radius + delta);
   }
 
   private findMarkerAtUv(uvX: number, uvY: number): LensMarker | null {

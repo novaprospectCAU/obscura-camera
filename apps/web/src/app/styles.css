@@ -588,6 +588,29 @@ body {
   gap: 0.45rem;
 }
 
+.marker-size-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 0.35rem 0.6rem;
+}
+
+.marker-size-row span {
+  color: var(--muted);
+  font-size: 0.83rem;
+}
+
+.marker-size-row input[type="range"] {
+  width: 100%;
+}
+
+.marker-size-row output {
+  min-width: 3.2rem;
+  text-align: right;
+  color: #d9e0ec;
+  font-size: 0.85rem;
+}
+
 .marker-layer {
   position: absolute;
   inset: 0;
