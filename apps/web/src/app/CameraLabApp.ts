@@ -542,15 +542,7 @@ export class CameraLabApp {
 
     if (event.code === "KeyR") {
       event.preventDefault();
-      this.pushHistoryCheckpoint();
-      this.params.reset();
-      this.markers = [];
-      this.selectedMarkerId = null;
-      this.pushMarkersToRenderer();
-      this.updateFocusOverlay();
-      if (this.elements) {
-        this.elements.status.textContent = "Reset to default parameters.";
-      }
+      this.applyReferenceOriginalSettings("Reset to original-reference settings.");
       return;
     }
 
@@ -1059,8 +1051,7 @@ export class CameraLabApp {
     });
 
     presetResetButton.addEventListener("click", () => {
-      this.params.reset();
-      this.setStatus("Reset to default parameters.");
+      this.applyReferenceOriginalSettings("Reset to original-reference settings.");
     });
 
     presetSaveButton.addEventListener("click", () => {
@@ -2601,17 +2592,23 @@ export class CameraLabApp {
       return;
     }
 
-    const apiKey = this.elements.aiApiKeyInput.value.trim();
     const prompt = this.elements.aiPromptInput.value.trim();
+
+    if (!prompt) {
+      this.setStatus("Enter a prompt for AI adjustment.");
+      return;
+    }
+
+    if (shouldRestoreReferenceOriginalPrompt(prompt)) {
+      this.applyReferenceOriginalSettings("Applied original-reference settings (prompt shortcut).");
+      return;
+    }
+
+    const apiKey = this.elements.aiApiKeyInput.value.trim();
     const currentState = this.params.getState();
 
     if (!apiKey) {
       this.setStatus("Enter an OpenAI API key first.");
-      return;
-    }
-
-    if (!prompt) {
-      this.setStatus("Enter a prompt for AI adjustment.");
       return;
     }
 
@@ -2737,6 +2734,32 @@ export class CameraLabApp {
     this.renderer.setSubjectContext(rendererContext);
     this.updateFocusOverlay();
     return nextContext;
+  }
+
+  private applyReferenceOriginalSettings(statusMessage: string): void {
+    this.pushHistoryCheckpoint();
+    this.params.reset();
+
+    const subjectContext = this.updateSubjectContextForRenderer(true);
+    const focusCenter = subjectContext?.center ?? { x: 0.5, y: 0.5 };
+    const focusMarker: LensMarker = {
+      id: `m-${this.markerSeed++}`,
+      kind: "focus",
+      x: clamp(focusCenter.x, 0, 1),
+      y: clamp(focusCenter.y, 0, 1),
+      radius: defaultRadiusForMarkerKind("focus"),
+      strength: defaultStrengthForMarkerKind("focus")
+    };
+
+    this.markers = [focusMarker];
+    this.selectedMarkerId = focusMarker.id;
+    this.markerTool = "focus";
+    writeStorage(MARKER_TOOL_STORAGE_KEY, this.markerTool);
+    this.syncLensShiftFromMarkers();
+    this.pushMarkersToRenderer();
+    this.updateFocusOverlay();
+    this.syncMarkerControls();
+    this.setStatus(statusMessage);
   }
 
   private updateFocusOverlay(state?: Readonly<CameraParams>): void {
@@ -3442,6 +3465,69 @@ function shouldAllowLensAdjustments(prompt: string): boolean {
     "심도"
   ];
   return keywords.some((keyword) => normalized.includes(keyword));
+}
+
+function shouldRestoreReferenceOriginalPrompt(prompt: string): boolean {
+  const normalized = prompt.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  const compact = normalized.replace(/\s+/g, " ");
+
+  if (compact === "원본" || compact === "original" || compact === "default") {
+    return true;
+  }
+
+  const directPhrases = [
+    "원본으로 되돌",
+    "원본으로 복귀",
+    "원본으로 리셋",
+    "원본으로 복원",
+    "원본 상태로",
+    "원본처럼",
+    "원본과 같",
+    "원본과 동일",
+    "원본에 가깝",
+    "기본값으로 되돌",
+    "초기값으로 되돌",
+    "초기 설정으로",
+    "기본 설정으로",
+    "reset to original",
+    "back to original",
+    "revert to original",
+    "restore original",
+    "same as original",
+    "match original",
+    "closest to original",
+    "reset to default",
+    "revert to default",
+    "restore default"
+  ];
+  if (directPhrases.some((phrase) => compact.includes(phrase))) {
+    return true;
+  }
+
+  const originalTerms = ["원본", "original", "기본값", "초기값", "default"];
+  const restoreTerms = [
+    "되돌",
+    "돌려",
+    "복귀",
+    "리셋",
+    "초기화",
+    "복원",
+    "맞춰",
+    "restore",
+    "revert",
+    "reset",
+    "back",
+    "match",
+    "same",
+    "closest"
+  ];
+  return (
+    originalTerms.some((term) => compact.includes(term)) &&
+    restoreTerms.some((term) => compact.includes(term))
+  );
 }
 
 function shouldAllowDepthOfFieldAdjustments(prompt: string): boolean {
