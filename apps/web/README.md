@@ -1,40 +1,68 @@
-# CameraLab Web MVP (`T0-T8`)
+# CameraLab Web
 
-This folder contains the initial web MVP with:
+CameraLab Web is an interactive camera-look simulator.
+It is built for teaching and experimentation, not physically exact RAW reproduction.
 
-- Vite + TypeScript bootstrap
-- Split layout: left control panel + right canvas preview
-- WebGL2 fullscreen quad renderer for an uploaded image texture
-- Image loading via file input and drag & drop
-- Webcam input via `getUserMedia`
-- Source toggle (image/webcam)
-- Parameter state store with change listeners
-- Camera sliders + numeric readouts
-- Custom presets (save/load via localStorage)
-- Preview modes: A / B / Split + split slider
-- Multi-pass WebGL pipeline (`input -> lens -> effects -> composite`)
-- RGB histogram panel (CPU readback, ~200ms interval)
-- Keyboard shortcuts: `Space` (A/B), `S` (split), `R` (reset)
-- PNG snapshot export
-- Histogram source mode selector (Original / Processed / Composite)
-- Session state restore on reload (localStorage)
-- Camera color controls: white balance (temp/tint), contrast, saturation
-- Lens position controls: `Lens Shift X/Y` weight (`-1..+1`) to move optical center
-- Interaction modes: `AE/AF`, `Subject Select` (mouse-follow + click lock), `Screen Pan` (drag when zoomed)
-- Upscaling controls: 1x / 1.5x / 2x / 2.5x / 3x / 3.5x / 4x internal processing + scaled PNG export
-- Upscale style modes: `Balanced` (look-matched) vs `Enhanced` (strong X1~X4 visual difference)
-- Tap-to-meter Auto Exposure / Auto Focus with AE/AF lock toggle
-- Sharpen and ISO-aware Noise Reduction controls
-- Performance modes: Quality / Balanced / Fast (preview resolution scaling, high-quality snapshot export)
-- Parameter UI theme switch: `Sliders` or animated camera-style rotating `Dials` (aperture/lens-specific motion)
-- AI prompt control: enter OpenAI API key + natural-language look prompt to auto-adjust camera settings
-- Subject-aware AI prompt context (center/bbox/brightness/sharpness/backlit) to stabilize exposure/focus suggestions
-- Subject-aware rendering anchor: focus/depth and vignette weighting adapt to detected subject position instead of fixed screen center
-- Transparent on-canvas focus ring overlay (shown in `Subject Select` mode)
+## Core Behavior
 
-Not included yet:
+- Source: uploaded image or webcam
+- Preview modes:
+  - `A`: Original source
+  - `B`: Processed simulation
+  - `Split`: A/B comparison
+- Rendering pipeline: `input -> lens -> effects -> composite`
+- Histogram modes: `Original / Processed / Composite`
 
-- Additional UI polish and camera-body styling
+## Important Limitation
+
+`Processed (B)` is intentionally non-bypass simulation.
+Even with conservative settings, it may not be pixel-identical to the source due to shader passes and texture sampling.
+
+If you need the closest original view, use preview `A (Original)`.
+
+## Current Feature Set
+
+- Vite + TypeScript + WebGL2 renderer
+- Drag/drop image loading + file picker + webcam input
+- Camera control set:
+  - exposure, shutter, ISO, aperture, focal length, focus distance
+  - distortion, vignette, chromatic aberration
+  - white balance (temp/tint), contrast, saturation
+  - sharpen + noise reduction
+- Lens/subject tools:
+  - interaction modes: `AE/AF`, `Subject Select`, `Screen Pan`
+  - marker tools: `Focus Lens`, `Blur Lens`, `Natural Light`, `Artificial Light`
+  - undo/redo history for marker edits
+- Snapshot export (`PNG`)
+- Upscaling controls:
+  - factor: `1x / 1.5x / 2x / 2.5x / 3x / 3.5x / 4x`
+  - style: `Balanced` / `Enhanced`
+  - preview performance scale: `Quality / Balanced / Fast`
+- AI prompt adjustment with subject-aware context
+
+## Reset and "Original-Reference" Baseline
+
+`Reset` (button or `R`) restores baseline parameters and re-creates one `Focus Lens` marker at detected subject center.
+
+Current baseline defaults:
+
+- Exposure: `0.00`
+- Shutter: `1/8000`
+- ISO: `100`
+- Aperture: `f/22.0`
+- Focal Length: `18mm`
+- Focus Distance: `50.0m`
+- Distortion / Vignette / Chromatic Aberration: `0`
+- Temp / Tint: `0`
+- Contrast / Saturation: `1`
+- Sharpen: `0`
+- Noise Reduction: `0.8`
+- Tone Map: `off`
+- Upscale: `1x`, style `Balanced`
+
+## AI Prompt Shortcut for Original Restore
+
+If the prompt intent is "restore to original/default" (for example, `원본으로 되돌려줘`, `restore original`, `reset to default`), the app applies local reset logic directly instead of sending a style-tuning request.
 
 ## Run
 
@@ -45,11 +73,9 @@ npm run dev
 ```
 
 Open `http://localhost:5173`.
-When selecting `Webcam`, allow camera permission in your browser.
-To use AI prompt control, paste your OpenAI API key in the left panel and run `Apply AI Prompt`.
-The key is stored in browser `localStorage` for convenience; use a throwaway/dev key for local testing.
+When using webcam mode, allow camera permission in your browser.
 
-## Other commands
+## Commands
 
 ```bash
 cd apps/web
@@ -58,7 +84,16 @@ npm run build
 npm run preview
 ```
 
-## File organization
+## Keyboard Shortcuts
 
-- App/UI logic: `src/app/*`
+- `Space`: toggle A/B
+- `S`: toggle Split
+- `R`: reset to original-reference baseline
+- `Cmd/Ctrl + Z`: undo
+- `Cmd/Ctrl + Shift + Z` or `Cmd/Ctrl + Y`: redo
+- `[` / `]`: decrease/increase selected marker size
+
+## File Organization
+
+- App/UI: `src/app/*`
 - WebGL renderer: `src/app/gl/*`

@@ -1,14 +1,29 @@
 # Obscura Camera
 
-<img width="1474" height="762" alt="image" src="https://github.com/user-attachments/assets/440af617-31d0-4313-9463-ba583783c23e" />
-<img width="1506" height="770" alt="image" src="https://github.com/user-attachments/assets/3a3b73a2-a00d-4f9f-9808-c74580b06dd5" />
-<img width="1503" height="763" alt="image" src="https://github.com/user-attachments/assets/eeae238b-9cc2-46a9-a730-b8d48c77f387" />
+Obscura Camera is a browser-based camera learning lab.
+It simulates camera/lens/sensor controls in real time with a WebGL pipeline, so you can compare:
 
-- WIP 
+- `A`: original input
+- `B`: processed simulation
+- `Split`: side-by-side comparison
 
-Current implementation target in this repo is `apps/web` (CameraLab Web MVP T0-T8).
+Current implementation target is `apps/web`.
 
-Run it with:
+## What This Is
+
+- Educational camera look simulator (not a RAW-accurate editor)
+- Input sources: image upload or webcam
+- Live controls for exposure, shutter, ISO, aperture, focus distance, lens effects, color, sharpening/NR
+- Subject-aware interaction with focus/blur/light markers
+- AI prompt assistance for look tuning
+
+## Important Note
+
+`Processed (B)` is intentionally a simulation path (`input -> lens -> effects -> composite`).
+It is not designed to be bit-exact with the original file.
+Use `A (Original)` when you need the closest unprocessed view.
+
+## Run Locally
 
 ```bash
 cd apps/web
@@ -16,4 +31,21 @@ npm install
 npm run dev
 ```
 
-Full web app notes are in `apps/web/README.md`.
+Open `http://localhost:5173`.
+
+## Build / Typecheck
+
+```bash
+cd apps/web
+npm run typecheck
+npm run build
+npm run preview
+```
+
+## Deployment
+
+This project is configured to auto-deploy from `main` to Vercel.
+
+## Docs
+
+- Web app details: `apps/web/README.md`
